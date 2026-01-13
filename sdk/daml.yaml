@@ -1,0 +1,24 @@
+sdk-version: 3.4.9
+name: asterizm
+version: 0.1.9
+source: src
+dependencies:
+- daml-prim
+- daml-stdlib
+data-dependencies:
+  - ../dars/splice-amulet-current.dar
+  - ../dars/splice-util-current.dar
+  - ../dars/splice-api-token-allocation-v1-current.dar
+  - ../dars/splice-api-token-allocation-instruction-v1-current.dar
+  - ../dars/splice-api-token-holding-v1-current.dar
+  - ../dars/splice-api-token-metadata-v1-current.dar
+  - ../dars/splice-api-token-transfer-instruction-v1-current.dar
+start-navigator: false
+build-options:
+- -Wno-crypto-text-is-alpha
+- -Wno-deprecated-exceptions
+- --target=2.1
+codegen:
+  js:
+    output-directory: ../ui/daml.js
+    npm-scope: daml.js

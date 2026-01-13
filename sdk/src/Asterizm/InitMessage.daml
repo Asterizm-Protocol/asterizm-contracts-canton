@@ -1,0 +1,17 @@
+module Asterizm.InitMessage where
+
+import DA.Crypto.Text (toHex, BytesHex)
+
+data InitMessage = InitMessage
+  with
+    dstAddress : BytesHex
+    srcAddress : BytesHex
+    srcChainId : BytesHex
+    dstChainId : BytesHex
+    txId : BytesHex
+    payload : BytesHex
+  deriving (Eq, Show)
+
+serialize : InitMessage -> BytesHex
+serialize (InitMessage dstAddress srcAddress srcChainId dstChainId txId payload) =
+  srcChainId <> srcAddress <> dstChainId <> dstAddress <> toHex 0  <> toHex 0  <> toHex 0 <> txId <> payload

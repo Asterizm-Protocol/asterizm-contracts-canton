@@ -1,0 +1,334 @@
+module Asterizm.AmuletVault where
+
+import Splice.Api.Token.TransferInstructionV1
+import Splice.AmuletRules
+import Splice.Amulet.TokenApiUtils
+import Splice.Util
+import Splice.Types
+import DA.Crypto.Text (toHex, BytesHex)
+import DA.Text (sha256)
+
+import qualified Asterizm.TransferAccount as TransferAccount
+import qualified Asterizm.InitMessage as InitMessage
+
+template AmuletVaultProposal
+  with
+    dsoParty : Party
+    vaultParty : Party
+    providerParty : Party
+    otherAddress : BytesHex
+    otherChainId : Int
+    localChainId : Int
+    refundEnabled : Bool
+    disableHashValidation: Bool
+    senders: [Party]
+  where
+    signatory providerParty
+    observer vaultParty
+
+    nonconsuming choice AmuletVaultProposal_Accept : (ContractId AmuletVault)
+      controller vaultParty
+      do
+        amuletVaultCid <- create AmuletVault with
+          dsoParty 
+          vaultParty 
+          providerParty 
+          otherAddress 
+          otherChainId 
+          localChainId 
+          refundEnabled 
+          disableHashValidation
+          senders
+
+        pure (amuletVaultCid)
+
+data AmuletVault_ReceiveResult = AmuletVault_ReceiveResult with
+    result : Splice.Api.Token.TransferInstructionV1.TransferInstructionResult
+    initEvent : InitiateTransferEvent
+    transferAccountCid : ContractId TransferAccount.TransferAccount
+    clientTxIdCid : ContractId SendClientTxId
+  deriving (Eq, Show)
+
+data AmuletVault_SendRawResult = AmuletVault_SendRawResult
+  with
+    result : TransferResult
+  deriving (Show, Eq)
+
+data AmuletVault_SendResult = AmuletVault_SendResult
+  with
+    result : TransferCommandResult
+  deriving (Show, Eq)
+
+data TransferCommandResult
+  = TransferCommandResultFailure with
+      reason : InvalidTransferReason
+  | TransferCommandResultSuccess with
+      result : TransferResult
+      receiveEvent : PayloadReceivedEvent
+      transferAccountCid : ContractId TransferAccount.TransferAccount
+  deriving (Show, Eq)
+
+template AmuletVault
+  with
+    dsoParty : Party
+    vaultParty : Party
+    providerParty : Party
+    otherAddress : BytesHex
+    otherChainId : Int
+    localChainId : Int
+    refundEnabled : Bool
+    disableHashValidation: Bool
+    senders: [Party]
+  where
+    signatory providerParty, vaultParty
+
+    nonconsuming choice AmuletVault_TransferInstruction_Accept : AmuletVault_ReceiveResult
+      with
+        transferInstructionCid : ContractId Splice.Api.Token.TransferInstructionV1.TransferInstruction
+        acceptArg : Splice.Api.Token.TransferInstructionV1.TransferInstruction_Accept
+        sendClientTxIdCid : ContractId SendClientTxId
+      controller providerParty
+      do 
+         instruction <- fetchCheckedInterface (ForDso dsoParty) transferInstructionCid
+         let receiver = (view instruction).transfer.receiver
+         let sender = (view instruction).transfer.sender
+         let instrumentId = (view instruction).transfer.instrumentId
+         let amount = (view instruction).transfer.amount
+         require ("instrumentId " <> show instrumentId <> " is amuletInstrumentId " <> show (amuletInstrumentId dsoParty)) (instrumentId == amuletInstrumentId dsoParty)
+         require ("receiver " <> show receiver <> " must match vaultParty " <> show vaultParty) (receiver == vaultParty)
+         require ("amount " <> show amount <>  "must be positive") (amount > 0.0)
+
+         result <- exercise transferInstructionCid acceptArg
+         case result.output of
+            TransferInstructionResult_Completed receiverHoldingCids -> do
+
+              clientTxIdContract <- fetch sendClientTxIdCid
+              let clientTxId = clientTxIdContract.txId
+              let serializedAmount = decimalToIntMultiplied amount
+              let payload = serializePayload sender serializedAmount
+
+              let initMessage = InitMessage.InitMessage {
+                dstAddress = otherAddress,
+                srcAddress = toHex providerParty,
+                srcChainId = toHex localChainId,
+                dstChainId = toHex otherChainId,
+                txId = toHex clientTxId,
+                payload = payload
+              }
+
+              let transferHash = sha256 (InitMessage.serialize initMessage)
+
+              let initEvent = InitiateTransferEvent {
+                userAddress = providerParty,
+                dstChainId = otherChainId,
+                trustedAddress = otherAddress,
+                transferHash = transferHash,
+                txId = clientTxId,
+                payload = payload
+              }
+
+              transferAccountCid <- create TransferAccount.TransferAccount with
+                owner = providerParty
+                transferHash = transferHash
+                successReceive = False
+                successExecute = False
+                refunded = False
+                senders = senders
+                payload = Some payload
+
+              clientTxIdCid <- exercise sendClientTxIdCid IncTxId
+
+              pure AmuletVault_ReceiveResult with
+                result
+                initEvent
+                transferAccountCid
+                clientTxIdCid
+
+            other -> abort $
+              "Expected TransferInstructionResult_Completed from AmuletVault_TransferInstruction_Accept but got " <> show other <>
+              ". Has the sender " <> show sender <> " setup a transfer correct?"
+
+    nonconsuming choice AmuletVault_Send : AmuletVault_SendResult
+      with
+        context : PaymentTransferContext
+        inputs : [TransferInput]
+        transferPreapprovalCid : ContractId TransferPreapproval
+        receiver: Party
+        amount: Decimal
+        description : Optional Text
+        txId : Int
+        transferHash : BytesHex
+        transferAccountCid: ContractId TransferAccount.TransferAccount
+      controller providerParty
+        do
+          transferAccount <- fetch transferAccountCid
+          assertMsg "Message already executed" (not transferAccount.successExecute)
+          assertMsg "Transfer Hash is wrong" (transferAccount.transferHash == transferHash)
+
+          -- Check the hash if validation is not disabled
+          if not disableHashValidation
+            then do
+              let serializedAmount = decimalToIntMultiplied amount
+              let payload = serializePayload receiver serializedAmount
+              let initMessage = InitMessage.InitMessage {
+                dstAddress = toHex providerParty,
+                srcAddress = otherAddress,
+                srcChainId = toHex otherChainId,
+                dstChainId = toHex localChainId,
+                txId = toHex txId,
+                payload = payload
+              }
+
+              let expectedHash = sha256 (InitMessage.serialize initMessage)
+              assertMsg "Invalid payload hash" (expectedHash == transferHash)
+            else pure ()
+
+          let mergeInputsAndReportError error = do
+              -- In the absence of automatic merging of inputs for external parties, it is possible for
+              -- a user to accumulate tons of small amulet holdings and be unable to do a transfer.
+              -- We do a self-transfer to merge inputs even in case of a failed transfer to guard against this.
+              _ <- exercisePaymentTransfer dsoParty context Splice.AmuletRules.Transfer with
+                sender = vaultParty
+                provider = providerParty
+                inputs = inputs
+                outputs = []
+                beneficiaries = None -- No beneficiaries for self-transfer merge.
+              pure (TransferCommandResultFailure error)
+          -- Verify that receiver and DSO party match. We don't validate that the receiver's provider matches
+          -- as changing that should be up to the receiver and not require the sender to resign.
+          _ <- fetchChecked (ForOwner with owner = receiver, dso = dsoParty) transferPreapprovalCid
+          result <-
+            try do
+              TransferPreapproval_SendResult result _meta <- exercise transferPreapprovalCid (TransferPreapproval_Send context inputs amount vaultParty description)
+              transferAccountCid <- exercise transferAccountCid TransferAccount.MarkTransferExecuted
+              let receiveEvent = PayloadReceivedEvent {
+                  dstAddress = show providerParty,
+                  srcAddress = otherAddress,
+                  srcChainId = otherChainId,
+                  txId = txId,
+                  transferHash = transferHash
+                }
+              pure TransferCommandResultSuccess with 
+                result
+                receiveEvent
+                transferAccountCid
+            catch
+              (ex : InvalidTransfer) -> mergeInputsAndReportError ex.reason
+              (ex : AnyException) -> mergeInputsAndReportError (ITR_Other with description = "unknown error")
+          pure AmuletVault_SendResult with
+            result
+
+    nonconsuming choice AmuletVault_SendRaw : AmuletVault_SendRawResult
+      with
+        context : PaymentTransferContext
+        inputs : [TransferInput]
+        transferPreapprovalCid : ContractId TransferPreapproval
+        receiver: Party
+        amount: Decimal
+        description : Optional Text
+      controller providerParty
+        do
+          _ <- fetchChecked (ForOwner with owner = receiver, dso = dsoParty) transferPreapprovalCid
+          TransferPreapproval_SendResult result _meta <- exercise transferPreapprovalCid (TransferPreapproval_Send context inputs amount vaultParty description)
+          pure AmuletVault_SendRawResult with 
+            result
+
+    nonconsuming choice ConfirmIncomingRefund : ContractId TransferAccount.TransferAccount
+      with
+        transferHash : BytesHex
+        transferAccountCid: Optional (ContractId TransferAccount.TransferAccount)
+      controller providerParty
+      do
+        case transferAccountCid of
+          Some transfer -> do
+            transferAccount <- fetch transfer
+
+            transferAccountCid <- create TransferAccount.TransferAccount with
+              owner = providerParty
+              transferHash = transferHash
+              successReceive = True
+              refunded = True
+              successExecute = transferAccount.successExecute
+              senders = senders
+              payload = transferAccount.payload
+
+            pure transferAccountCid
+
+          None -> do
+            transferAccountCid <- create TransferAccount.TransferAccount with
+              owner = providerParty
+              transferHash = transferHash
+              successReceive = False
+              refunded = True
+              successExecute = False
+              senders = senders
+              payload = None
+
+            pure (transferAccountCid)
+
+serializePayload : Party -> Int -> BytesHex
+serializePayload sender amount =
+  toHex amount <> toHex sender
+
+
+decimalToIntMultiplied : Decimal -> Int
+decimalToIntMultiplied d =
+  let
+    -- Multiply the decimal by 10^10
+    multipliedDecimal = d  * 10000000000.0
+  in
+    -- Truncate the result to get an Int
+    truncate multipliedDecimal
+
+template SendClientTxId
+  with
+    owner : Party
+    txId : Int
+  where
+    signatory owner
+
+    nonconsuming choice IncTxId : ContractId SendClientTxId
+      controller owner
+      do
+        archive self
+        create this with
+          txId = txId + 1
+
+template RefundAccount
+  with
+    refundOwner : Party
+    user : Party
+    transferHash : BytesHex
+    status : RefundStatus
+  where
+    signatory refundOwner
+    observer user
+
+    nonconsuming choice UpdateRefundStatus : ContractId RefundAccount
+      with
+        newStatus : RefundStatus
+      controller refundOwner
+      do
+        create this with status = newStatus
+
+data InitiateTransferEvent = InitiateTransferEvent
+  with
+    userAddress : Party
+    dstChainId : Int
+    trustedAddress : BytesHex
+    txId : Int
+    transferHash : BytesHex
+    payload: BytesHex
+  deriving (Eq, Show)
+
+data RefundStatus = Pending | Success | Canceled
+  deriving (Eq, Show)
+
+data PayloadReceivedEvent = PayloadReceivedEvent
+  with
+    dstAddress : Text
+    srcAddress : BytesHex
+    srcChainId : Int
+    txId : Int
+    transferHash : BytesHex
+  deriving (Eq, Show)

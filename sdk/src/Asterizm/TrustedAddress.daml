@@ -1,0 +1,14 @@
+module Asterizm.TrustedAddress where
+
+import DA.Crypto.Text
+import qualified Asterizm.Chain as Chain
+
+template TrustedAddress
+  with
+    clientOwner : Party
+    manager : Party
+    address : BytesHex
+    chain : Chain.Chain
+  where
+    signatory manager
+    observer clientOwner

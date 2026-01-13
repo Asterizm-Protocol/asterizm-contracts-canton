@@ -1,0 +1,388 @@
+module Asterizm.AmuletVaultWithLock where
+
+import Splice.AmuletRules
+import Splice.Util
+import Splice.Types
+import DA.Crypto.Text (toHex, BytesHex)
+import qualified DA.Crypto.Text as Crypto
+import DA.Time
+
+import Splice.Amulet
+import Splice.Round
+
+import qualified Asterizm.TransferAccount as TransferAccount
+import qualified Asterizm.InitMessage as InitMessage
+import Splice.Expiry
+
+template AmuletVaultWithLockProposal
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    clientOtherAddress : BytesHex
+    otherChainId : Int
+    localChainId : Int
+    refundEnabled : Bool
+    disableHashValidation: Bool
+    senders: [Party]
+  where
+    signatory clientOwner
+    observer vault
+
+    nonconsuming choice AmuletVaultWithLockProposal_Accept : (ContractId AmuletVaultWithLock)
+      controller vault
+      do
+        amuletVaultCid <- create AmuletVaultWithLock with
+          dso 
+          vault 
+          clientOwner 
+          clientOtherAddress 
+          otherChainId 
+          localChainId 
+          refundEnabled 
+          disableHashValidation
+          senders
+
+        pure (amuletVaultCid)
+
+data AmuletVaultWithLockPayment_AcceptResult = AmuletVaultWithLockPayment_AcceptResult with
+    initEvent : InitiateTransferEvent
+    transferAccountCid : ContractId TransferAccount.TransferAccount
+    clientTxIdCid : ContractId SendClientTxId
+  deriving (Eq, Show)
+
+data AmuletVaultWithLock_UnlockToUserRawResult = AmuletVaultWithLock_UnlockToUserRawResult
+  with
+    result : TransferResult
+  deriving (Show, Eq)
+
+data AmuletVaultWithLock_UnlockToUserResult = AmuletVaultWithLock_UnlockToUserResult
+  with
+      receiveEvent : PayloadReceivedEvent
+      transferAccountCid : ContractId TransferAccount.TransferAccount
+  deriving (Show, Eq)
+
+data AmuletVaultWithLock_LiquidateResult = AmuletVaultWithLock_LiquidateResult
+  with
+      amulet : ContractId Amulet
+  deriving (Show, Eq)
+
+data AmuletVaultUserService_MakePaymentResult = AmuletVaultUserService_MakePaymentResult with
+  amuletVaultPayment : ContractId AmuletVaultWithLockPayment
+  senderChange : Optional (ContractId Amulet)
+
+template AmuletVaultUserService
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    clientOtherAddress : BytesHex
+    otherChainId : Int
+    localChainId : Int
+    refundEnabled : Bool
+    disableHashValidation: Bool
+    senders: [Party]
+    user: Party
+    userOtherAddress : BytesHex
+    walletProvider: Party
+    description: Text
+  where
+    signatory clientOwner, vault
+    observer user, walletProvider
+
+    nonconsuming choice AmuletVaultUserService_MakePayment : AmuletVaultUserService_MakePaymentResult
+      with
+        inputs : [TransferInput]
+        context : PaymentTransferContext
+        walletProvider : Party
+        targetAmount: Decimal
+        sendClientTxIdCid : ContractId SendClientTxId
+        stakeId : Int
+      controller user, walletProvider
+      do
+        now <- getTime
+
+        contextRound <- fetchPublicReferenceData (ForDso with dso) context.context.openMiningRound (OpenMiningRound_Fetch user)
+
+        outputFees <- exerciseComputeFees dso context user [mkTransferOutput vault targetAmount]
+
+        let lockAmount = targetAmount + sum outputFees
+
+        let expiresAt = now `addRelTime` days 1500 
+
+        let transfer = Splice.AmuletRules.Transfer with
+                sender = user
+                provider = walletProvider
+                inputs = inputs
+                outputs =
+                    [  TransferOutput with
+                            receiver = user
+                            amount = lockAmount
+                            lock = Some TimeLock with
+                                holders = [clientOwner]
+                                expiresAt = expiresAt
+                                optContext = Some $ "amulet-vault-landing: " <> description
+                            receiverFeeRatio = 0.0
+                    ]
+                beneficiaries = None
+
+        result <- exercisePaymentTransfer dso context transfer
+        let [TransferResultLockedAmulet lockedAmulet] = result.createdAmulets
+
+        let senderChange = result.senderChangeAmulet
+        let round = result.round
+
+        amuletVaultPayment <- create AmuletVaultWithLockPayment with ..
+
+        return AmuletVaultUserService_MakePaymentResult with ..
+
+template AmuletVaultWithLockPayment
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    clientOtherAddress : BytesHex
+    otherChainId : Int
+    localChainId : Int
+    refundEnabled : Bool
+    disableHashValidation: Bool
+    senders: [Party]
+    user: Party
+    userOtherAddress : BytesHex
+    walletProvider: Party
+    description: Text
+    targetAmount : Decimal -- ^ Exact amount in Amulet that the receiver will get.
+    lockedAmulet : ContractId LockedAmulet
+    round : Round -- ^ The round in which the locked amulet was created, added as an extra field so we can avoid ingesting locked amulets.
+    sendClientTxIdCid : ContractId SendClientTxId
+    stakeId : Int
+  where
+    signatory clientOwner, vault, user
+
+    nonconsuming choice AmuletVaultWithLockPayment_Accept : AmuletVaultWithLockPayment_AcceptResult
+      controller clientOwner
+      do 
+        let amount = targetAmount
+        require ("amount " <> show amount <>  "must be positive") (amount > 0.0)
+
+        clientTxIdContract <- fetch sendClientTxIdCid
+
+        let clientTxId = clientTxIdContract.txId
+
+        require ("stake id " <> show stakeId <> "must be equal to sendClientTxIdCid.txId") (clientTxId == stakeId)
+
+        let serializedAmount = decimalToIntMultiplied amount
+        let payload = serializePayload userOtherAddress serializedAmount clientTxId
+
+        let srcAddress = Crypto.sha256 (toHex clientOwner) -- sha from client owner
+
+        let initMessage = InitMessage.InitMessage {
+          dstAddress = clientOtherAddress,
+          srcAddress = srcAddress,
+          srcChainId = toHex localChainId,
+          dstChainId = toHex otherChainId,
+          txId = toHex clientTxId,
+          payload = payload
+        }
+
+        let transferHash = Crypto.sha256 (InitMessage.serialize initMessage)
+
+        let initEvent = InitiateTransferEvent {
+          userAddress = clientOwner,
+          dstChainId = otherChainId,
+          trustedAddress = clientOtherAddress,
+          transferHash = transferHash,
+          txId = clientTxId,
+          payload = payload
+        }
+
+        transferAccountCid <- create TransferAccount.TransferAccount with
+          owner = clientOwner
+          transferHash = transferHash
+          successReceive = False
+          successExecute = False
+          refunded = False
+          senders = senders
+          payload = Some payload
+
+        clientTxIdCid <- exercise sendClientTxIdCid IncTxId
+
+        pure AmuletVaultWithLockPayment_AcceptResult with
+          initEvent
+          transferAccountCid
+          clientTxIdCid
+          
+    choice AmuletVaultWithLock_UnlockToUser : AmuletVaultWithLock_UnlockToUserResult
+      with
+        transferContext : AppTransferContext
+        txId : Int
+        transferAccountCid: ContractId TransferAccount.TransferAccount
+      controller clientOwner
+        do
+            transferAccount <- fetch transferAccountCid
+            assertMsg "Message already executed" (not transferAccount.successExecute)
+
+            let amount = targetAmount
+            let receiver = toHex user
+
+            -- Check the hash if validation is not disabled
+            if not disableHashValidation
+                then do
+                let serializedAmount = decimalToIntMultiplied amount
+                let payload = serializePayload receiver serializedAmount stakeId
+                let dstAddress = Crypto.sha256 (toHex clientOwner) -- sha from client owner
+
+                let initMessage = InitMessage.InitMessage {
+                    dstAddress = dstAddress,
+                    srcAddress = clientOtherAddress,
+                    srcChainId = toHex otherChainId,
+                    dstChainId = toHex localChainId,
+                    txId = toHex txId,
+                    payload = payload
+                }
+
+                let expectedHash = Crypto.sha256 (InitMessage.serialize initMessage)
+                assertMsg "Invalid payload hash" (expectedHash == transferAccount.transferHash)
+                else pure ()
+
+            -- unlock users payment 
+            result <- exercise lockedAmulet (LockedAmulet_Unlock transferContext.openMiningRound)
+
+            transferAccountCid <- exercise transferAccountCid TransferAccount.MarkTransferExecuted
+            let receiveEvent = PayloadReceivedEvent {
+                dstAddress = show clientOwner,
+                srcAddress = clientOtherAddress,
+                srcChainId = otherChainId,
+                txId = txId,
+                transferHash = transferAccount.transferHash
+            }
+            pure AmuletVaultWithLock_UnlockToUserResult with
+                receiveEvent
+                transferAccountCid
+
+    choice AmuletVaultWithLock_Liquidate : AmuletVaultWithLock_LiquidateResult
+      with
+        transferContext : AppTransferContext
+      controller clientOwner
+        do
+            let amount = targetAmount
+            let receiver = vault
+
+            -- unlock users payment
+            result <- exercise lockedAmulet (LockedAmulet_Unlock transferContext.openMiningRound)
+            -- send to vault
+            let transfer = Splice.AmuletRules.Transfer with
+                  sender = user
+                  provider = clientOwner
+                  inputs = [InputAmulet result.amuletSum.amulet]
+                  outputs = [mkTransferOutput receiver targetAmount]
+                  beneficiaries = None
+            result <- exerciseAppTransfer dso transferContext transfer
+            require "Precomputed fees were exact" (result.summary.senderChangeFee == 0.0)
+            let [TransferResultAmulet amuletCid] = result.createdAmulets
+
+            pure AmuletVaultWithLock_LiquidateResult with
+                amulet = amuletCid
+
+
+data AmuletVaultWithLock_CreateUserServiceResult = AmuletVaultWithLock_CreateUserServiceResult with
+  amuletVaultUserService : ContractId AmuletVaultUserService
+
+template AmuletVaultWithLock
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    clientOtherAddress : BytesHex
+    otherChainId : Int
+    localChainId : Int
+    refundEnabled : Bool
+    disableHashValidation: Bool
+    senders: [Party]
+  where
+    signatory clientOwner, vault
+
+    nonconsuming choice AmuletVaultWithLock_CreateUserService : AmuletVaultWithLock_CreateUserServiceResult
+      with
+        user: Party
+        userOtherAddress : BytesHex
+        walletProvider: Party
+        description: Text
+      controller clientOwner
+      do
+        amuletVaultUserService <- create AmuletVaultUserService with ..
+        return AmuletVaultWithLock_CreateUserServiceResult with ..
+
+serializePayload : BytesHex -> Int -> Int -> BytesHex
+serializePayload address amount txId =
+  toHex 0 <> toHex 0 <> toHex 0 <> toHex txId <> toHex 0 <> toHex 0 <> toHex 0 <> toHex amount <> address
+
+decimalToIntMultiplied : Decimal -> Int
+decimalToIntMultiplied d =
+  let
+    -- Multiply the decimal by 10^10
+    multipliedDecimal = d  * 10000000000.0
+  in
+    -- Truncate the result to get an Int
+    truncate multipliedDecimal
+
+template SendClientTxId
+  with
+    owner : Party
+    txId : Int
+  where
+    signatory owner
+
+    nonconsuming choice IncTxId : ContractId SendClientTxId
+      controller owner
+      do
+        archive self
+        create this with
+          txId = txId + 1
+
+template RefundAccount
+  with
+    refundOwner : Party
+    user : Party
+    transferHash : BytesHex
+    status : RefundStatus
+  where
+    signatory refundOwner
+    observer user
+
+    nonconsuming choice UpdateRefundStatus : ContractId RefundAccount
+      with
+        newStatus : RefundStatus
+      controller refundOwner
+      do
+        create this with status = newStatus
+
+data InitiateTransferEvent = InitiateTransferEvent
+  with
+    userAddress : Party
+    dstChainId : Int
+    trustedAddress : BytesHex
+    txId : Int
+    transferHash : BytesHex
+    payload: BytesHex
+  deriving (Eq, Show)
+
+data RefundStatus = Pending | Success | Canceled
+  deriving (Eq, Show)
+
+data PayloadReceivedEvent = PayloadReceivedEvent
+  with
+    dstAddress : Text
+    srcAddress : BytesHex
+    srcChainId : Int
+    txId : Int
+    transferHash : BytesHex
+  deriving (Eq, Show)
+
+mkTransferOutput : Party -> Decimal -> TransferOutput
+mkTransferOutput receiver amount =
+  TransferOutput with
+    receiver
+    amount
+    lock = None
+    receiverFeeRatio = 0.0

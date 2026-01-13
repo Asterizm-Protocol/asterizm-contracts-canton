@@ -1,0 +1,38 @@
+module Asterizm.Client.Proposal where
+
+import qualified Asterizm.Client.Client as CSS
+import Asterizm.CustomRelayer (CustomRelayerContract)
+import Asterizm.TrustedAddress (TrustedAddress)
+
+template ClientProposal
+  with
+    owner : Party
+    manager : Party
+    disableHashValidation : Bool
+    localChainId : Int
+    notifyTransferSendingResult : Bool
+    refundEnabled : Bool
+    senders : [Party]
+    customRelayContract : CustomRelayerContract
+    trustedAddress: TrustedAddress
+  where
+    signatory owner
+    observer manager
+
+    nonconsuming choice AcceptClientProposal : (ContractId CSS.Client)
+      controller manager
+      do
+        sendCid <- create CSS.Client with
+          owner = owner
+          manager = manager
+          txId = 0
+          notifyTransferSendingResult = notifyTransferSendingResult
+          refundEnabled = refundEnabled
+          senders = senders
+          customRelayContract = customRelayContract
+          trustedAddress = trustedAddress
+          localChainId = localChainId
+          disableHashValidation = disableHashValidation
+
+        pure (sendCid)
+        

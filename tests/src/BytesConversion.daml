@@ -1,0 +1,37 @@
+module BytesConversion where
+
+import DA.Assert ((===))
+import Daml.Script
+import Asterizm.InitMessage (InitMessage (..), serialize)
+import qualified DA.Crypto.Text as Crypto
+import DA.Crypto.Text (HasToHex(toHex))
+import Splice.Testing.Utils (allocatePartyExact)
+
+setup : Script ()
+setup = script do
+
+  clientOwner <- allocatePartyExact "brikly-devnet-1::1220a391faa29a55a7e67c8b854d6f8b218b2fe3517683d0a6a70e370a4b97b4b2"
+
+  let srcAddress = Crypto.sha256 (toHex clientOwner) -- sha from client owner
+
+  let expected_srcAddress ="a16756f8803021429b937f8f34a6a06199f08eff1195c8115ba8271b7dd42345"
+
+  srcAddress === expected_srcAddress
+
+  let initMsg = InitMessage with
+        srcChainId = toHex 80001
+        srcAddress = "a16756f8803021429b937f8f34a6a06199f08eff1195c8115ba8271b7dd42345"
+        dstChainId = toHex 97
+        dstAddress = "00000000000000000000000074164d84a1960438d307744d3c0a75ae8fb64499"
+        txId = toHex 1
+        payload = "000000000000000000000000f9e3b4ac4ceff24464840c426e7e3506dc145c440000000000000000000000000000000000000000000000000000008bb2c970000000000000000000000000000000000000000000000000000000000000000001"
+
+  let serialized = serialize initMsg
+
+  let transferHash = Crypto.sha256 (serialize initMsg)
+
+  let expected_hash ="55a05ff4c25127ab3a84611855cddcf2edfdea23d5b972125a9aff4d1821e230"
+
+  transferHash === expected_hash
+ 
+  return ()

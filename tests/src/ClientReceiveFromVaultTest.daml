@@ -1,0 +1,247 @@
+module ClientReceiveFromVaultTest where
+
+import Daml.Script
+import DA.Optional(fromSomeNote)
+import qualified Asterizm.Client.Client as Client
+import qualified Asterizm.Client.Proposal as Proposal
+import qualified Asterizm.Initializer as Initializer
+import qualified Asterizm.Chain as Chain
+import qualified Asterizm.InitMessage as InitMessage
+import Asterizm.AmuletVault
+
+import DA.Crypto.Text (toHex)
+import DA.Text (sha256)
+import DA.Time
+import DA.List (maximumOn)
+
+import Splice.Testing.Registries.AmuletRegistry qualified as AmuletRegistry
+import Splice.Testing.TokenStandard.WalletClient qualified as WalletClient
+import Splice.Testing.Utils
+import Splice.Round
+import Splice.Amulet
+import Splice.AmuletRules as AmuletRules
+
+clientreceiveTest : Script ()
+clientreceiveTest = do
+    -- Allocate parties
+    registry <- AmuletRegistry.initialize AmuletRegistry.defaultAmuletRegistryConfig
+
+    now <- getTime
+
+    vaultParty <- allocatePartyExact "vaultParty"
+
+    fredUser <- allocatePartyExact "fredUser"
+    aliceRelayOwner <- allocateParty "aliceRelayOwner"
+    bobClientOwner <- allocateParty "bobClientOwner"
+    charlieSender <- allocateParty "charlieSender"
+    manager <- allocateParty "manager"
+
+    -- Create Factory
+    factoryCid <- submit manager do
+        createCmd Initializer.Factory with
+            manager = manager
+
+    let localChainId = 1
+
+    -- Initialize system by manager
+    (customRelayerCid, chainCid) <- submit manager do
+        exerciseCmd factoryCid Initializer.Initialize with
+            systemRelayerOwner = aliceRelayOwner
+            localChainId = localChainId
+            manager = manager
+            systemFee = 0.1
+
+    -- Add source chain 
+    let srcChainId = 2
+    srcChainCid  <- submit manager do
+        createCmd Chain.Chain with
+            id = srcChainId
+            manager = manager
+            name = "Ethereum"
+            chainType = 1
+
+    let srcAddress = toHex "1234567890abcdef"
+
+    -- Add trusted address
+
+    srcChainContract <- queryContractId manager srcChainCid
+    let srcChain = fromSomeNote "no chain" srcChainContract
+
+    trustedAddressCid <- submit manager do
+        exerciseCmd factoryCid Initializer.AddTrustedAddress with
+            clientOwner = bobClientOwner
+            chain = srcChain
+            address = srcAddress
+
+    customRelayContract <- queryContractId manager customRelayerCid
+    let customRelay = fromSomeNote "no relay" customRelayContract
+
+    trustedAddressContract <- queryContractId manager trustedAddressCid
+    let trustedAddress = fromSomeNote "no trustedAddress" trustedAddressContract
+
+    -- Create Client contract
+    clientProposalCid <- submit bobClientOwner do
+        createCmd Proposal.ClientProposal with
+            owner = bobClientOwner
+            manager = manager
+            disableHashValidation = False
+            localChainId = localChainId
+            notifyTransferSendingResult = True
+            refundEnabled = True
+            senders = [charlieSender]
+            customRelayContract = customRelay
+            trustedAddress = trustedAddress
+
+    clientCid <- submit manager do
+        exerciseCmd clientProposalCid Proposal.AcceptClientProposal
+
+    -- Create Amulet Vault Proposal
+    amuletVaultProposalCid <- submit bobClientOwner do
+        exerciseCmd clientCid Client.CreateAmuletVaultProposal with
+            dsoParty = registry.dso
+            vaultParty
+
+    -- Create Amulet Vault
+    amuletVaultCid <- submit vaultParty do
+        exerciseCmd amuletVaultProposalCid AmuletVaultProposal_Accept
+
+    -- Fund the vault with amulets
+    AmuletRegistry.tapLockedAndUnlockedFunds registry vaultParty 1000.0
+
+    -- Test 1: TransferMessage on Client from Relayer
+    let testTxId = 1
+
+    let amount = 10.0
+    let receiver = fredUser
+    let serializedAmount = decimalToIntMultiplied amount
+    let testPayload = serializePayload receiver serializedAmount
+    let initMessage = InitMessage.InitMessage {
+      dstAddress = toHex bobClientOwner,
+      srcAddress = srcAddress,
+      srcChainId = toHex srcChainId,
+      dstChainId = toHex localChainId,
+      txId = toHex testTxId,
+      payload = testPayload
+    }
+
+    let testTransferHash = sha256 (InitMessage.serialize initMessage)
+
+    (payloadReceivedFromClient, transferAccountFromClient) <- submit aliceRelayOwner do
+        exerciseCmd clientCid Client.TransferMessage with
+            relayOwner = aliceRelayOwner
+            txId = testTxId
+            transferHash = testTransferHash
+            transferAccountCid = None
+
+    -- Verify TransferMessage event
+    assertMsg "DstAddress mismatch" (payloadReceivedFromClient.dstAddress == bobClientOwner)
+    assertMsg "SrcAddress mismatch" (payloadReceivedFromClient.srcAddress == srcAddress)
+    assertMsg "SrcChainId mismatch" (payloadReceivedFromClient.srcChainId == srcChainId)
+    assertMsg "TxId mismatch in TransferMessage" (payloadReceivedFromClient.txId == testTxId)
+    assertMsg "TransferHash mismatch in TransferMessage" (payloadReceivedFromClient.transferHash == testTransferHash)
+
+    -- Verify TransferAccount created
+    transferAccountFromTransfer <- queryContractId bobClientOwner transferAccountFromClient
+    let transferAcc = fromSomeNote "no transferAccount" transferAccountFromTransfer
+    assertMsg "SuccessReceive should be true" transferAcc.successReceive
+    assertMsg "TransferHash mismatch in account" (transferAcc.transferHash == testTransferHash)
+
+    -- Test 2: AmuletVault_Send on AmuletVault
+
+    let expiresAt = addRelTime now (days 1)
+
+    transferPreapprovalCid <- AmuletRegistry.createTransferPreapproval registry fredUser bobClientOwner expiresAt
+
+    Some (amuletRules, _) <- queryAmuletRulesByKey registry.dso
+
+    (openRoundCid, openRound) <- getLatestActiveOpenRoundForDso registry.dso
+
+    setTime (max now openRound.opensAt)
+
+    let transferContext = amuletTransferContext openRoundCid None
+
+    amuletCids <- map fst <$> query @Amulet vaultParty
+
+    let inputs = map InputAmulet amuletCids
+
+    AmuletVault_SendResult {..} <- submit (actAs [bobClientOwner] <> readAs [registry.dso]) $ exerciseCmd amuletVaultCid AmuletVault_Send with
+        context = PaymentTransferContext with
+            amuletRules = amuletRules
+            context = transferContext
+        inputs = inputs
+        transferPreapprovalCid = transferPreapprovalCid
+        receiver = fredUser
+        amount = 10.0
+        description = Some "<withdrawal-UUID>"
+        txId = testTxId
+        transferHash = testTransferHash
+        transferAccountCid = transferAccountFromClient
+
+    case result of
+        TransferCommandResultSuccess {result = transferResult, ..} -> do
+            WalletClient.checkBalance fredUser registry.instrumentId 10.0
+            WalletClient.checkBalanceApprox vaultParty registry.instrumentId 990.0
+        TransferCommandResultFailure reason -> do
+            assertFail $ "Transfer failed: " <> show reason
+
+    -- Test 3: TransferSendingResult on Client
+    let testStatusCode = 0
+    transferSendingResultEvent <- submit aliceRelayOwner do
+        exerciseCmd clientCid Client.TransferSendingResult with
+            relayOwner = aliceRelayOwner
+            transferHash = testTransferHash
+            statusCode = testStatusCode
+
+    -- Verify TransferSendingResult event
+    assertMsg "DstAddress mismatch in TransferSendingResult" (transferSendingResultEvent.dstAddress == bobClientOwner)
+    assertMsg "TransferHash mismatch in TransferSendingResult" (transferSendingResultEvent.transferHash == testTransferHash)
+    assertMsg "StatusCode mismatch" (transferSendingResultEvent.statusCode == testStatusCode)
+
+    -- Test 4: AmuletVault_SendRaw on AmuletVault
+
+    let expiresAt2 = addRelTime now (days 1)
+
+    transferPreapprovalCid2 <- AmuletRegistry.createTransferPreapproval registry fredUser bobClientOwner expiresAt2
+
+    Some (amuletRules2, _) <- queryAmuletRulesByKey registry.dso
+
+    (openRoundCid2, openRound2) <- getLatestActiveOpenRoundForDso registry.dso
+
+    setTime (max now openRound2.opensAt)
+
+    let transferContext2 = amuletTransferContext openRoundCid2 None
+
+    amuletCids2 <- map fst <$> query @Amulet vaultParty
+
+    let inputs2 = map InputAmulet amuletCids2
+
+    AmuletVault_SendRawResult {result = transferResult2} <- submit (actAs [bobClientOwner] <> readAs [registry.dso]) $ exerciseCmd amuletVaultCid AmuletVault_SendRaw with
+        context = PaymentTransferContext with
+            amuletRules = amuletRules2
+            context = transferContext2
+        inputs = inputs2
+        transferPreapprovalCid = transferPreapprovalCid2
+        receiver = fredUser
+        amount = 10.0
+        description = Some "<raw-withdrawal-UUID>"
+
+    -- Check balances after SendRaw
+    WalletClient.checkBalance fredUser registry.instrumentId 20.0
+    WalletClient.checkBalanceApprox vaultParty registry.instrumentId 980.0
+
+    pure ()
+
+
+getLatestActiveOpenRoundForDso : Party -> Script (ContractId OpenMiningRound, OpenMiningRound)
+getLatestActiveOpenRoundForDso dso = do
+  rounds <- query @OpenMiningRound dso
+  case maximumOn (\(_, r) -> r.round) rounds of
+    r -> pure r
+
+queryAmuletRulesByKey : Party -> Script (Optional (ContractId AmuletRules, AmuletRules))
+queryAmuletRulesByKey dso = do
+  amuletRules <- query @AmuletRules dso
+  case amuletRules of
+    [] -> pure None
+    [amuletRules] -> pure (Some amuletRules)
+    rules -> abort $ "Expected 0 or 1 AmuletRules contracts but got " <> show rules

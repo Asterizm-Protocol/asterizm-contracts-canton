@@ -1,0 +1,11 @@
+module Asterizm.Chain where
+
+template Chain
+  with
+    id : Int
+    manager : Party
+    name : Text
+    chainType : Int
+  where
+    signatory manager
+    observer manager

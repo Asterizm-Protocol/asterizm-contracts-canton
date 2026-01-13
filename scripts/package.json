@@ -1,0 +1,24 @@
+{
+  "name": "scripts",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "deploy.ts",
+  "scripts": {
+    "deploy": "ts-node deploy.ts",
+    "client-send": "ts-node client-send.ts"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.19",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.2.3",
+    "undici": "^7.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.0"
+  }
+}

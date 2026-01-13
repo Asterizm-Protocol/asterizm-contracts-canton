@@ -1,0 +1,61 @@
+module Asterizm.Initializer where
+
+import DA.Optional ()
+import DA.Crypto.Text
+import qualified Asterizm.CustomRelayer as CustomRelayerContract
+import qualified Asterizm.Chain as Chain
+import qualified Asterizm.TrustedAddress as TrustedAddress
+
+template Factory
+  with
+    manager : Party
+  where
+    signatory manager
+
+    nonconsuming choice Initialize : (ContractId CustomRelayerContract.CustomRelayerContract, ContractId Chain.Chain)
+      with
+        systemRelayerOwner : Party
+        localChainId : Int
+        manager : Party
+        systemFee : Numeric 10
+      controller manager
+      do
+
+        chainCid <- create Chain.Chain with
+          id = localChainId
+          manager = manager
+          name = "Canton"
+          chainType = 5
+          
+        systemRelayerCid <- create CustomRelayerContract.CustomRelayerContract with
+          relayOwner = systemRelayerOwner
+          manager = manager
+          fee = systemFee
+          
+        pure (systemRelayerCid, chainCid)
+
+    nonconsuming choice AddTrustedAddress : ContractId TrustedAddress.TrustedAddress
+      with
+        clientOwner: Party
+        address : BytesHex
+        chain : Chain.Chain
+      controller manager
+      do
+        create TrustedAddress.TrustedAddress with
+          clientOwner = clientOwner
+          manager = manager
+          address = address
+          chain = chain
+
+    nonconsuming choice BlockAccount : ()
+      with
+        chainId : Int
+        clientOwner : Party
+        trustedAddress : ContractId TrustedAddress.TrustedAddress
+      controller manager
+      do
+
+        address <- fetch trustedAddress
+        assertMsg "Client owner is wrong" (address.clientOwner == clientOwner)
+        assertMsg "Chain id is wrong" (address.chain.id == chainId)
+        archive trustedAddress

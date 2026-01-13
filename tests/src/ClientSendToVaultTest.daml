@@ -1,0 +1,252 @@
+module ClientSendToVaultTest where
+
+import Daml.Script
+import DA.Optional(fromSomeNote)
+import DA.Crypto.Text (toHex)
+import DA.Text (sha256)
+import DA.Time
+
+import qualified Asterizm.Client.Client as Client
+import qualified Asterizm.Client.Proposal as Proposal
+import qualified Asterizm.Initializer as Initializer
+import qualified Asterizm.Chain as Chain
+import qualified Asterizm.InitMessage as InitMessage
+import Asterizm.AmuletVault
+
+import Splice.Testing.Registries.AmuletRegistry qualified as AmuletRegistry
+import Splice.Testing.TokenStandard.RegistryApi qualified as RegistryApi
+import Splice.Testing.TokenStandard.WalletClient qualified as WalletClient
+import Splice.Testing.Utils
+import Splice.Api.Token.MetadataV1 as MetadataV1
+import Splice.Api.Token.TransferInstructionV1 as Api.Token.TransferInstructionV1
+
+testSerializePayload : Party -> Int -> Text
+testSerializePayload sender amount = toHex amount <> toHex sender
+
+testDecimalToIntMultiplied : Decimal -> Int
+testDecimalToIntMultiplied d = truncate (d * 10000000000.0)
+
+clientSendTest : Script ()
+clientSendTest = do
+    -- Allocate parties
+    registry <- AmuletRegistry.initialize AmuletRegistry.defaultAmuletRegistryConfig
+
+    now <- getTime
+
+    -- where the money will be sent
+    vaultParty <- allocatePartyExact "vaultParty"
+
+    -- user who performs the swap
+    fredUser <- allocatePartyExact "fredUser"
+
+    -- relay owner
+    aliceRelayOwner <- allocateParty "aliceRelayOwner"
+
+    -- client contract owner
+    bobClientOwner <- allocateParty "bobClientOwner"
+
+    -- dso
+    dsoParty <- allocateParty "dsoParty"
+
+    -- sender for the client contract
+    charlieSender <- allocateParty "charlieSender"
+
+    -- system owner
+    manager <- allocateParty "manager"
+
+    -- Create Factory
+    factoryCid <- submit manager do
+        createCmd Initializer.Factory with
+            manager = manager
+
+    let localChainId = 1
+
+    -- Initialize system by manager
+    (customRelayerCid, chainCid) <- submit manager do
+        exerciseCmd factoryCid Initializer.Initialize with
+            systemRelayerOwner = aliceRelayOwner
+            localChainId = localChainId
+            manager = manager
+            systemFee = 0.1
+
+    -- TODO: Add source chain and connect chain with trusted address
+
+    let dstChainId = 2
+    dstChainCid  <- submit manager do
+        createCmd Chain.Chain with
+            id = dstChainId
+            manager = manager
+            name = "Ethereum"
+            chainType = 1
+
+    localChainCid <- submit manager do
+        createCmd Chain.Chain with
+            id = localChainId
+            manager = manager
+            name = "Local"
+            chainType = 1
+
+    -- Add trusted address
+
+    let dstAddress = toHex "1234567890abcdef"
+    dstChainContract <- queryContractId manager dstChainCid
+    let dstChain = fromSomeNote "no chain" dstChainContract
+
+    trustedAddressCid <- submit manager do
+        exerciseCmd factoryCid Initializer.AddTrustedAddress with
+            clientOwner = bobClientOwner
+            chain = dstChain
+            address = dstAddress
+
+    localChainContract <- queryContractId manager localChainCid
+    let localChain = fromSomeNote "no chain" localChainContract
+
+    localTrustedAddressCid <- submit manager do
+        exerciseCmd factoryCid Initializer.AddTrustedAddress with
+            clientOwner = bobClientOwner
+            chain = localChain
+            address = toHex bobClientOwner
+
+    customRelayContract <- queryContractId manager customRelayerCid
+    let customRelay = fromSomeNote "no relay" customRelayContract
+
+    trustedAddressContract <- queryContractId manager trustedAddressCid
+    let trustedAddress = fromSomeNote "no trustedAddress" trustedAddressContract
+
+    -- Create Client contract
+    clientProposalCid <- submit bobClientOwner do
+        createCmd Proposal.ClientProposal with
+            owner = bobClientOwner
+            manager = manager
+            disableHashValidation = False
+            localChainId = localChainId
+            notifyTransferSendingResult = True
+            refundEnabled = True
+            senders = [charlieSender]
+            customRelayContract = customRelay
+            trustedAddress = trustedAddress
+
+    clientCid <- submit manager do
+        exerciseCmd clientProposalCid Proposal.AcceptClientProposal
+
+    -- Create Amulet Vault Proposal
+    amuletVaultProposalCid <- submit bobClientOwner do
+        exerciseCmd clientCid Client.CreateAmuletVaultProposal with
+            dsoParty = registry.dso
+            vaultParty
+
+    -- Create Amulet Vault
+    amuletVaultCid <- submit vaultParty do
+        exerciseCmd amuletVaultProposalCid AmuletVaultProposal_Accept
+
+    let testTxId = 1
+
+    let testPayload = testSerializePayload fredUser (testDecimalToIntMultiplied 10.0)
+
+    let initMessage = InitMessage.InitMessage {
+        dstAddress = dstAddress,
+        srcAddress = toHex bobClientOwner,
+        srcChainId = toHex localChainId,
+        dstChainId = toHex dstChainId,
+        txId = toHex testTxId,
+        payload = testPayload
+    }
+
+    let transferHash = sha256 (InitMessage.serialize initMessage)
+
+    -- top up fredUser with 100
+    AmuletRegistry.tapLockedAndUnlockedFunds registry fredUser 100.0
+
+    fredHoldings <- WalletClient.listHoldings fredUser registry.instrumentId
+
+    -- verify top-up
+    WalletClient.checkBalance fredUser registry.instrumentId 100.0
+    
+    let depositTransfer = Api.Token.TransferInstructionV1.Transfer {
+        sender = fredUser,
+        receiver = vaultParty,
+        amount = 10.0,
+        instrumentId = registry.instrumentId,
+        requestedAt = now,
+        executeBefore = now `addRelTime` days 1,
+        inputHoldingCids = map fst fredHoldings,
+        meta = emptyMetadata
+    }
+
+    enrichedChoice <- RegistryApi.getTransferFactory registry TransferFactory_Transfer with
+        expectedAdmin = registry.dso
+        transfer = depositTransfer
+        extraArgs = emptyExtraArgs
+
+    result <- submitWithDisclosures' fredUser enrichedChoice.disclosures $
+        exerciseCmd enrichedChoice.factoryCid enrichedChoice.arg
+
+    TransferInstructionResult_Pending transferInstrCid <- pure result.output
+
+    -- for backend
+    [ (transferInstrCid, _) ] <- WalletClient.listTransferOffers vaultParty registry.instrumentId
+
+    -- Create SendClientTxId
+    sendClientTxIdCid <- submit bobClientOwner do
+        createCmd SendClientTxId with
+            owner = bobClientOwner
+            txId = testTxId
+
+    context <- RegistryApi.getTransferInstruction_AcceptContext registry transferInstrCid emptyMetadata
+
+    AmuletVault_ReceiveResult {initEvent, transferAccountCid} <- submit (actAs [bobClientOwner] <> readAs [vaultParty, registry.dso]) $ exerciseCmd amuletVaultCid AmuletVault_TransferInstruction_Accept with
+        transferInstructionCid = transferInstrCid
+        acceptArg = TransferInstruction_Accept with
+            extraArgs = ExtraArgs with
+                context = context.choiceContext
+                meta = emptyMetadata
+        sendClientTxIdCid = sendClientTxIdCid
+
+    -- Verify ReceiveMessage event
+    assertMsg "UserAddress mismatch in ReceiveMessage" (initEvent.userAddress == bobClientOwner)
+    assertMsg "TrustedAddress mismatch in ReceiveMessage" (initEvent.trustedAddress == dstAddress)
+    assertMsg "DstChainId mismatch in ReceiveMessage" (initEvent.dstChainId == dstChainId)
+    assertMsg "TxId mismatch in ReceiveMessage" (initEvent.txId == testTxId)
+    assertMsg "TransferHash mismatch in ReceiveMessage" (initEvent.transferHash == transferHash)
+    assertMsg "Payload mismatch in ReceiveMessage" (initEvent.payload == testPayload)
+
+    -- Test 2: Send message with value by sender
+    -- sending to relay
+    (updatedTransferAccountCid, sendMessageEventCid) <- submit charlieSender do
+        exerciseCmd clientCid Client.SendMessageWithValue with
+            sender = charlieSender
+            txId = testTxId
+            transferHash = transferHash
+            value = 0.2
+            transferAccountCid = transferAccountCid
+
+    -- Verify send message event
+    sendMessageEvent <- queryContractId charlieSender sendMessageEventCid
+    let sendMessage = fromSomeNote "no sendMessageEvent" sendMessageEvent
+    assertMsg "TxId mismatch in send message" (sendMessage.txId == testTxId)
+    assertMsg "Value mismatch" (sendMessage.value == 0.2)
+    assertMsg "Transfer hash mismatch" (sendMessage.transferHash == transferHash)
+    assertMsg "DstChainId mismatch in send message" (sendMessage.dstChainId == dstChainId)
+    assertMsg "SrcAddress mismatch" (sendMessage.srcAddress == bobClientOwner)
+
+    -- Test 3: Resend message by sender
+    resendMessageEventCid <- submit charlieSender do
+        exerciseCmd clientCid Client.ResendMessage with
+            sender = charlieSender
+            transferHash = transferHash
+            value = 0.15
+            transferAccountCid = updatedTransferAccountCid
+
+    -- Verify resend message event
+    resendMessageEvent <- queryContractId charlieSender resendMessageEventCid
+    let resendMessage = fromSomeNote "no resendMessageEvent" resendMessageEvent
+    assertMsg "SrcAddress mismatch in resend" (resendMessage.srcAddress == bobClientOwner)
+    assertMsg "Transfer hash mismatch in resend" (resendMessage.transferHash == transferHash)
+    assertMsg "Value mismatch in resend" (resendMessage.value == 0.15)
+
+    -- Test 4: Check transfer executed
+    transferExecutedAccount <- queryContractId bobClientOwner updatedTransferAccountCid
+    let transferExecuted = fromSomeNote "no transferExecutedAccount" transferExecutedAccount
+    assertMsg "Transfer not marked as executed" (transferExecuted.successExecute)
+
+    pure ()

@@ -1,0 +1,10 @@
+module Asterizm.CustomRelayer where
+
+template CustomRelayerContract
+  with
+    relayOwner : Party
+    manager : Party
+    fee : Numeric 10
+  where
+    signatory manager
+    observer relayOwner

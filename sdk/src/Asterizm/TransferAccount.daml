@@ -1,0 +1,32 @@
+module Asterizm.TransferAccount where
+
+import DA.Crypto.Text
+
+template TransferAccount
+  with
+    owner : Party
+    transferHash : BytesHex
+    successReceive : Bool
+    successExecute : Bool
+    refunded : Bool
+    senders: [Party]
+    payload: Optional BytesHex
+  where
+    signatory owner
+    observer senders
+
+    nonconsuming choice MarkTransferExecutedBySender : ContractId TransferAccount
+      with 
+        sender: Party
+      controller sender
+      do
+        archive self
+        create this with
+          successExecute = True
+
+    nonconsuming choice MarkTransferExecuted : ContractId TransferAccount
+      controller owner
+      do
+        archive self
+        create this with
+          successExecute = True

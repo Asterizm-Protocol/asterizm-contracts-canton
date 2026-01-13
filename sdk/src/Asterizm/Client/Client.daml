@@ -1,0 +1,215 @@
+module Asterizm.Client.Client where
+
+import DA.Crypto.Text (BytesHex)
+
+import qualified Asterizm.TransferAccount as TransferAccount
+import Asterizm.CustomRelayer (CustomRelayerContract)
+import Asterizm.TrustedAddress (TrustedAddress)
+import qualified Asterizm.AmuletVault as AmuletVault
+
+template Client
+  with
+    owner : Party
+    manager : Party
+    txId : Int
+    notifyTransferSendingResult : Bool
+    refundEnabled : Bool
+    senders : [Party]
+    customRelayContract : CustomRelayerContract
+    trustedAddress: TrustedAddress
+    localChainId : Int
+    disableHashValidation: Bool
+  where
+    signatory owner, manager
+    observer senders, observer customRelayContract
+
+    nonconsuming choice SendMessageWithValue : (ContractId TransferAccount.TransferAccount, ContractId SendMessageEvent)
+      with
+        sender : Party
+        txId : Int
+        transferHash : BytesHex
+        value : Numeric 10
+        transferAccountCid: ContractId TransferAccount.TransferAccount
+      controller sender
+      do
+        let dstAddress = trustedAddress.address
+
+        transferAccount <- fetch transferAccountCid
+        assertMsg "Transfer hash is wrong found" (transferAccount.transferHash == transferHash)
+
+        -- Relay logic starts here
+        assertMsg "Insufficient value for fee" (value >= customRelayContract.fee)
+
+        let dstChainId = trustedAddress.chain.id
+
+        -- Create send message event
+        ev <- create SendMessageEvent with
+          sender = sender
+          relayOwner = customRelayContract.relayOwner
+          dstChainId = dstChainId
+          srcAddress = owner
+          dstAddress = dstAddress
+          transferHash = transferHash
+          txId = txId
+          value = value
+          transferResultNotifyFlag = notifyTransferSendingResult
+          payload = transferAccount.payload
+        
+        -- Mark transfer as executed
+        updatedTransferAccountCid <- exercise transferAccountCid TransferAccount.MarkTransferExecutedBySender with
+          sender = sender
+
+        -- Return the updated transfer account
+        pure (updatedTransferAccountCid, ev)
+
+    nonconsuming choice ResendMessage : ContractId ResendMessageEvent
+      with
+        sender : Party
+        transferHash : BytesHex
+        value : Numeric 10
+        transferAccountCid: ContractId TransferAccount.TransferAccount
+      controller sender
+      do
+        transferAccount <- fetch transferAccountCid
+        assertMsg "Transfer hash is wrong found" (transferAccount.transferHash == transferHash)
+
+        assertMsg "Insufficient value for fee" (value >= customRelayContract.fee)
+
+        sendMessageEventCid <- create ResendMessageEvent with
+          sender = sender
+          relayOwner = customRelayContract.relayOwner
+          srcAddress = owner
+          transferHash = transferHash
+          value = value
+
+        pure sendMessageEventCid
+
+    nonconsuming choice TransferMessage : (PayloadReceivedEvent, ContractId TransferAccount.TransferAccount)
+      with
+        relayOwner: Party
+        txId : Int
+        transferHash : BytesHex
+        transferAccountCid: Optional (ContractId TransferAccount.TransferAccount)
+      controller relayOwner
+      do
+        let srcAddress = trustedAddress.address
+
+        case transferAccountCid of
+          Some transfer -> do
+            transferAccount <- fetch transfer
+            assertMsg "Transfer Hash is wrong" (transferAccount.transferHash == transferHash)
+
+            transferAccountCid <- create TransferAccount.TransferAccount with
+              owner = owner
+              transferHash = transferHash
+              successReceive = True
+              refunded = transferAccount.refunded
+              successExecute = False
+              senders = senders
+              payload = transferAccount.payload
+
+            let ev = PayloadReceivedEvent {
+              dstAddress = owner,
+              srcAddress = srcAddress,
+              srcChainId = trustedAddress.chain.id,
+              txId = txId,
+              transferHash = transferHash
+            }
+
+            pure (ev, transferAccountCid)
+
+          None -> do
+
+            transferAccountCid <- create TransferAccount.TransferAccount with
+              owner = owner
+              transferHash = transferHash
+              successReceive = True
+              refunded = False
+              successExecute = False
+              senders = senders
+              payload = None
+
+            let ev = PayloadReceivedEvent {
+              dstAddress = owner,
+              srcAddress = srcAddress,
+              srcChainId = trustedAddress.chain.id,
+              txId = txId,
+              transferHash = transferHash
+            }
+
+            pure (ev, transferAccountCid)
+
+    nonconsuming choice TransferSendingResult : TransferSendingResultEvent
+      with
+        relayOwner : Party
+        transferHash : BytesHex
+        statusCode : Int
+      controller relayOwner
+      do
+        let cid = TransferSendingResultEvent {
+          dstAddress = owner,
+          transferHash = transferHash,
+          statusCode = statusCode
+        }
+
+        pure cid
+
+    nonconsuming choice CreateAmuletVaultProposal : (ContractId AmuletVault.AmuletVaultProposal)
+      with
+        dsoParty : Party
+        vaultParty : Party
+      controller owner
+      do
+        sendCid <- create AmuletVault.AmuletVaultProposal with
+          refundEnabled = refundEnabled
+          localChainId = localChainId
+          otherAddress = trustedAddress.address
+          otherChainId = trustedAddress.chain.id
+          disableHashValidation = disableHashValidation
+          senders = senders
+          dsoParty
+          vaultParty
+          providerParty = owner
+
+        pure (sendCid)
+    
+data PayloadReceivedEvent = PayloadReceivedEvent
+  with
+    dstAddress : Party
+    srcAddress : BytesHex
+    srcChainId : Int
+    txId : Int
+    transferHash : BytesHex
+  deriving (Eq, Show)
+
+data TransferSendingResultEvent = TransferSendingResultEvent
+  with
+    dstAddress : Party
+    transferHash : BytesHex
+    statusCode : Int
+  deriving (Eq, Show)
+
+template SendMessageEvent
+  with
+    sender : Party
+    relayOwner: Party
+    dstChainId : Int
+    srcAddress : Party
+    dstAddress : BytesHex
+    transferHash : BytesHex
+    txId : Int
+    value : Numeric 10
+    transferResultNotifyFlag : Bool
+    payload : Optional BytesHex
+  where
+    signatory sender
+
+template ResendMessageEvent
+  with
+    sender : Party
+    relayOwner : Party
+    srcAddress : Party
+    transferHash : BytesHex
+    value : Numeric 10
+  where
+    signatory sender
