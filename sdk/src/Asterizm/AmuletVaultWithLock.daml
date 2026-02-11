@@ -94,7 +94,6 @@ template AmuletVaultUserService
       with
         inputs : [TransferInput]
         context : PaymentTransferContext
-        walletProvider : Party
         targetAmount: Decimal
         sendClientTxIdCid : ContractId SendClientTxId
         stakeId : Int
@@ -157,7 +156,7 @@ template AmuletVaultWithLockPayment
     sendClientTxIdCid : ContractId SendClientTxId
     stakeId : Int
   where
-    signatory clientOwner, vault, user
+    signatory clientOwner, vault, user, walletProvider
 
     nonconsuming choice AmuletVaultWithLockPayment_Accept : AmuletVaultWithLockPayment_AcceptResult
       controller clientOwner
@@ -273,7 +272,7 @@ template AmuletVaultWithLockPayment
             -- send to vault
             let transfer = Splice.AmuletRules.Transfer with
                   sender = user
-                  provider = clientOwner
+                  provider = walletProvider
                   inputs = [InputAmulet result.amuletSum.amulet]
                   outputs = [mkTransferOutput receiver targetAmount]
                   beneficiaries = None

@@ -30,9 +30,14 @@ export const asterizmPackageId = process.env.ASTERIZM_PACKAGE_ID!;
 export const initializerFactoryTemplateId = `${asterizmPackageId}:Asterizm.Initializer:Factory`;
 export const chainTemplateId = `${asterizmPackageId}:Asterizm.Chain:Chain`;
 export const clientProposalTemplateId = `${asterizmPackageId}:Asterizm.Client.Proposal:ClientProposal`;
+export const clientProposalApprovedByRelayerTemplateId = `${asterizmPackageId}:Asterizm.Client.Proposal:ClientProposalApprovedByRelayer`;
 export const clientTemplateId = `${asterizmPackageId}:Asterizm.Client.Client:Client`;
+
 export const amuletVaultWithLockProposalTemplateId = `${asterizmPackageId}:Asterizm.AmuletVaultWithLock:AmuletVaultWithLockProposal`;
 export const amuletVaultWithLockTemplateId = `${asterizmPackageId}:Asterizm.AmuletVaultWithLock:AmuletVaultWithLock`;
+
+export const nftVaultProposalTemplateId = `${asterizmPackageId}:Asterizm.NFTVault:NFTVaultProposal`;
+
 export const sendClientTxIdTemplateId = `${asterizmPackageId}:Asterizm.AmuletVaultWithLock:SendClientTxId`;
 export const amuletVaultUserServiceTemplateId = `${asterizmPackageId}:Asterizm.AmuletVaultWithLock:AmuletVaultUserService`;
 export const amuletVaultWithLockPaymentTemplateId = `${asterizmPackageId}:Asterizm.AmuletVaultWithLock:AmuletVaultWithLockPayment`;

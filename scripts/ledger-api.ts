@@ -407,7 +407,7 @@ export type ExerciseCommandPayload = {
     templateId: string;
     contractId: string;
     choice: string;
-    choiceArgument: DamlValue;
+    choiceArgument: DamlValue|undefined;
 };
 
 export type ExerciseByKeyCommandPayload = {

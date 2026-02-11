@@ -1,4 +1,4 @@
-module ClientLiquidateVaultWithLockTest where
+module ClientSendToNFTVaultTest where
 
 import Daml.Script
 import DA.Optional(fromSomeNote)
@@ -6,7 +6,7 @@ import qualified Asterizm.Client.Client as Client
 import qualified Asterizm.Client.Proposal as Proposal
 import qualified Asterizm.Initializer as Initializer
 import qualified Asterizm.Chain as Chain
-import Asterizm.AmuletVaultWithLock
+import Asterizm.NFTVault
 
 import DA.Crypto.Text (toHex)
 import DA.List (maximumOn)
@@ -18,8 +18,9 @@ import Splice.Round
 import Splice.Amulet
 import Splice.AmuletRules as AmuletRules
 
-clientreceiveWithLockTest : Script ()
-clientreceiveWithLockTest = do
+
+clientreceiveWithNFTVaultTest : Script ()
+clientreceiveWithNFTVaultTest = do
     -- Allocate parties
     registry <- AmuletRegistry.initialize AmuletRegistry.defaultAmuletRegistryConfig
 
@@ -28,14 +29,11 @@ clientreceiveWithLockTest = do
     vaultParty <- allocatePartyExact "vaultParty"
 
     fredUser <- allocatePartyExact "fredUser"
-    let fredUserOtherAddress = toHex "1234567890abcdef"
-    fredWalletProvider <- allocatePartyExact "fredWalletProvider"
     aliceRelayOwner <- allocateParty "aliceRelayOwner"
     bobClientOwner <- allocateParty "bobClientOwner"
     charlieSender <- allocateParty "charlieSender"
-    charlieSenderWalletProvider <- allocatePartyExact "charlieSenderWalletProvider"
-
     manager <- allocateParty "manager"
+    charlieSenderWalletProvider <- allocatePartyExact "charlieSenderWalletProvider"
 
     -- Create Factory
     factoryCid <- submit manager do
@@ -99,36 +97,37 @@ clientreceiveWithLockTest = do
     clientCid <- submit manager do
         exerciseCmd clientProposalApprovedByRelayerCid Proposal.ClientProposalApprovedByRelayer_Accept
 
-    -- Create Amulet Vault Proposal
-    amuletVaultWithLockProposalCid <- submit bobClientOwner do
-        exerciseCmd clientCid Client.CreateAmuletVaultWithLockProposal with
+    -- Create NFT Vault Proposal
+    nftVaultProposalCid <- submit bobClientOwner do
+        exerciseCmd clientCid Client.CreateNftVaultProposal with
             dso = registry.dso
             vault = vaultParty
 
-    -- Create Amulet Vault With Lock
-    amuletVaultWithLockCid <- submit vaultParty do
-        exerciseCmd amuletVaultWithLockProposalCid AmuletVaultWithLockProposal_Accept
+    -- Create NFT Vault
+    nftVaultCid <- submit vaultParty do
+        exerciseCmd nftVaultProposalCid NFTVaultProposal_Accept
 
-    -- Create User Service for receiving
-    userServiceResult <- submit bobClientOwner do
-        exerciseCmd amuletVaultWithLockCid AmuletVaultWithLock_CreateUserService with
-            user = fredUser
-            userOtherAddress = fredUserOtherAddress
-            walletProvider = fredWalletProvider
-            description = "Test receive from vault with lock"
-
-    let amuletVaultUserServiceCid = userServiceResult.amuletVaultUserService
-
-    -- Fund the user with amulets
-    AmuletRegistry.tapLockedAndUnlockedFunds registry fredUser 1000.0
+    -- Fund the vault with amulets (assuming NFT uses amulets or similar)
+    AmuletRegistry.tapLockedAndUnlockedFunds registry vaultParty 1000.0
     AmuletRegistry.tapLockedAndUnlockedFunds registry charlieSender 1000.0
 
-    -- Test 1: Make Payment on Landing
+    -- Test 1: NFTVault_Accept to initiate transfer from vault
+    let testTxId = 1
+    let userOtherAddress = toHex fredUser
+    sendClientTxIdCid <- createSendClientTxId bobClientOwner testTxId
 
-    -- Create SendClientTxId first
-    let stakeId = 1
-    
-    sendClientTxIdCid <- createSendClientTxId bobClientOwner stakeId
+    NFTVault_AcceptResult {initEvent = nftInitEvent, transferAccountCid = nftTransferAccountCid, clientTxIdCid = nftClientTxIdCid} <- submit bobClientOwner do
+        exerciseCmd nftVaultCid NFTVault_Accept with
+            userOtherAddress = userOtherAddress
+            sendClientTxIdCid = sendClientTxIdCid
+
+    -- Verify NFTVault_Accept event
+    assertMsg "UserAddress mismatch in NFTVault_Accept" (nftInitEvent.userAddress == bobClientOwner)
+    assertMsg "TrustedAddress mismatch in NFTVault_Accept" (nftInitEvent.trustedAddress == srcAddress)
+    assertMsg "DstChainId mismatch in NFTVault_Accept" (nftInitEvent.dstChainId == srcChainId)
+    assertMsg "TxId mismatch in NFTVault_Accept" (nftInitEvent.txId == testTxId)
+
+    -- Test 2: Send message with value by sender for the NFT transfer
 
     Some (amuletRules, _) <- queryAmuletRulesByKey registry.dso
 
@@ -138,39 +137,15 @@ clientreceiveWithLockTest = do
 
     let transferContext = amuletTransferContext openRoundCid None
 
-    amuletCids <- map fst <$> query @Amulet fredUser
-
-    let inputs = map InputAmulet amuletCids
-
-    AmuletVaultUserService_MakePaymentResult {..} <- submit (actAs [fredUser, fredWalletProvider] <> readAs [registry.dso]) $ exerciseCmd amuletVaultUserServiceCid AmuletVaultUserService_MakePayment with
-        inputs = inputs
-        context = PaymentTransferContext with
-            amuletRules = amuletRules
-            context = transferContext
-        targetAmount = 10.0
-        sendClientTxIdCid = sendClientTxIdCid
-        stakeId = stakeId
-
-    -- Test 2: Accept Payment to Receive
-    AmuletVaultWithLockPayment_AcceptResult {..} <- submit bobClientOwner do
-        exerciseCmd amuletVaultPayment AmuletVaultWithLockPayment_Accept
-
-    -- Verify ReceiveMessage event
-    assertMsg "UserAddress mismatch in ReceiveMessage" (initEvent.userAddress == bobClientOwner)
-    assertMsg "TrustedAddress mismatch in ReceiveMessage" (initEvent.trustedAddress == srcAddress)
-    assertMsg "DstChainId mismatch in ReceiveMessage" (initEvent.dstChainId == srcChainId)
-    assertMsg "TxId mismatch in ReceiveMessage" (initEvent.txId == 1)
-
-    -- Test 3: Send message with value by sender
     amuletCids <- map fst <$> query @Amulet charlieSender
     let inputs = map InputAmulet amuletCids
 
     (updatedTransferAccountCid, sendMessageEventCid) <- submit (actAs [charlieSender, charlieSenderWalletProvider] <> readAs [registry.dso]) $ exerciseCmd clientCid Client.SendMessageWithValue with
             sender = charlieSender
-            txId = initEvent.txId
-            transferHash = initEvent.transferHash
+            txId = testTxId
+            transferHash = nftInitEvent.transferHash
             value = 0.2
-            transferAccountCid = transferAccountCid
+            transferAccountCid = nftTransferAccountCid
             inputs
             context = PaymentTransferContext with
                 amuletRules = amuletRules
@@ -181,48 +156,21 @@ clientreceiveWithLockTest = do
     -- Verify send message event
     sendMessageEvent <- queryContractId charlieSender sendMessageEventCid
     let sendMessage = fromSomeNote "no sendMessageEvent" sendMessageEvent
-    assertMsg "TxId mismatch in send message" (sendMessage.txId == initEvent.txId)
+    assertMsg "TxId mismatch in send message" (sendMessage.txId == testTxId)
     assertMsg "Value mismatch" (sendMessage.value == 0.2)
-    assertMsg "Transfer hash mismatch" (sendMessage.transferHash == initEvent.transferHash)
+    assertMsg "Transfer hash mismatch" (sendMessage.transferHash == nftInitEvent.transferHash)
     assertMsg "DstChainId mismatch in send message" (sendMessage.dstChainId == srcChainId)
     assertMsg "SrcAddress mismatch" (sendMessage.srcAddress == bobClientOwner)
 
-    -- Test 4: Liquidate Payment
-    Some (amuletRules2, _) <- queryAmuletRulesByKey registry.dso
-
-    (openRoundCid2, openRound2) <- getLatestActiveOpenRoundForDso registry.dso
-
-    setTime (max now openRound2.opensAt)
-
-    let appTransferContext = AppTransferContext with
-            amuletRules = amuletRules2
-            openMiningRound = openRoundCid2
-            featuredAppRight = None
-
-    AmuletVaultWithLock_LiquidateResult {..} <- submit (actAs [bobClientOwner] <> readAs [registry.dso]) $ do
-        exerciseCmd amuletVaultPayment AmuletVaultWithLock_Liquidate with
-            transferContext = appTransferContext
-
-    -- Check balances after AmuletVaultWithLock_Liquidate
-    WalletClient.checkBalance fredUser registry.instrumentId 989.71
-    WalletClient.checkBalanceApprox vaultParty registry.instrumentId 10.0
     WalletClient.checkBalanceApprox aliceRelayOwner registry.instrumentId 0.2
 
     pure ()
-
-createSendClientTxId : Party -> Int -> Script (ContractId SendClientTxId)
-createSendClientTxId owner txId = do
-    submit owner do
-        createCmd SendClientTxId with
-            owner = owner
-            txId = txId
 
 getLatestActiveOpenRoundForDso : Party -> Script (ContractId OpenMiningRound, OpenMiningRound)
 getLatestActiveOpenRoundForDso dso = do
   rounds <- query @OpenMiningRound dso
   case maximumOn (\(_, r) -> r.round) rounds of
     r -> pure r
-
 
 queryAmuletRulesByKey : Party -> Script (Optional (ContractId AmuletRules, AmuletRules))
 queryAmuletRulesByKey dso = do
@@ -231,3 +179,10 @@ queryAmuletRulesByKey dso = do
     [] -> pure None
     [amuletRules] -> pure (Some amuletRules)
     rules -> abort $ "Expected 0 or 1 AmuletRules contracts but got " <> show rules
+
+createSendClientTxId : Party -> Int -> Script (ContractId SendClientTxId)
+createSendClientTxId owner txId = do
+    submit owner do
+        createCmd SendClientTxId with
+            owner = owner
+            txId = txId

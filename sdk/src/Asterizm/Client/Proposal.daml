@@ -17,15 +17,48 @@ template ClientProposal
     trustedAddress: TrustedAddress
   where
     signatory owner
+    observer manager, observer customRelayContract
+
+    choice ClientProposal_CreateProposalApporvedByRelayer : (ContractId ClientProposalApprovedByRelayer)
+      with
+        relayOwner : Party
+      controller relayOwner
+      do
+        sendCid <- create ClientProposalApprovedByRelayer with
+          owner = owner
+          manager = manager
+          notifyTransferSendingResult = notifyTransferSendingResult
+          refundEnabled = refundEnabled
+          senders = senders
+          customRelayContract = customRelayContract
+          trustedAddress = trustedAddress
+          localChainId = localChainId
+          disableHashValidation = disableHashValidation
+
+        pure (sendCid)
+        
+
+template ClientProposalApprovedByRelayer
+  with
+    owner : Party
+    manager : Party
+    disableHashValidation : Bool
+    localChainId : Int
+    notifyTransferSendingResult : Bool
+    refundEnabled : Bool
+    senders : [Party]
+    customRelayContract : CustomRelayerContract
+    trustedAddress: TrustedAddress
+  where
+    signatory owner, customRelayContract.relayOwner
     observer manager
 
-    nonconsuming choice AcceptClientProposal : (ContractId CSS.Client)
+    choice ClientProposalApprovedByRelayer_Accept : (ContractId CSS.Client)
       controller manager
       do
         sendCid <- create CSS.Client with
           owner = owner
           manager = manager
-          txId = 0
           notifyTransferSendingResult = notifyTransferSendingResult
           refundEnabled = refundEnabled
           senders = senders

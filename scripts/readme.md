@@ -1,15 +1,15 @@
-## ⚠️ ATTENTION
-The API periodically fails. If a call fails but there was an object in the console — comment out the call and manually insert the data.
+## ⚠️ Важное предупреждение
+API периодически отваливается. Если какой-то вызов упал, но в консоли был объект — комментируем вызов и подставляем данные руками.
 
-Example:
+Пример:
 
 ```js
-// init call
+// исходный вызов
 const factoryCid = await createCmd({...});
 console.info('factoryCid', factoryCid);
 ```
 
-If everything broke but the console returned an object or a string or something else, then insert into JS:
+Если всё развалилось, но консоль выдала объект или строку или еще что-то, то вставляем в жс:
 
 ```js
 const factoryCid = {
@@ -20,8 +20,8 @@ const factoryCid = {
 
 ---
 
-## 1. Environment setup
-Fill in all variables from `.env.example`, except:
+## 1. Настройка окружения
+Заполняем все переменные из `.env.example`, кроме:
 
 ```
 USER_AMULET_WITH_LOCK_CID
@@ -30,14 +30,14 @@ CLIENT_CID
 
 ---
 
-## 2. Contract deployment
-Command:
+## 2. Деплой контрактов
+Команда:
 
 ```bash
 npm run deploy
 ```
 
-Save the output CIDs:
+Сохраняем выведенные CID'ы:
 
 ```txt
 factoryCid xxxxx
@@ -54,7 +54,7 @@ amuletVaultWithLockCid xxxxx
 
 ---
 
-## 3. Fill in the missing variables
+## 3. Заполняем недостающие переменные
 
 ```txt
 USER_AMULET_WITH_LOCK_CID = amuletVaultWithLockCid
@@ -63,16 +63,16 @@ CLIENT_CID = clientCid
 
 ---
 
-## 4. Client-side transaction sending
-Command:
+## 4. Отправка транзакции клиентом
+Команда:
 
 ```bash
 npm run client-send
 ```
 
-If something breaks again — **don’t clear the console**, but manually insert the CIDs into the code using the same approach as above.
+Если снова что-то сдохло — **не стираем консоль**, а вручную вписываем CID'ы в код по тому же принципу, что и выше.
 
-After a successful transaction, save:
+После успешной транзы сохраняем:
 
 ```txt
 next clientTxIdCid for txId=2 xxxxx
@@ -80,11 +80,11 @@ next clientTxIdCid for txId=2 xxxxx
 
 ---
 
-## 5. New transactions
-If you need to send the next one:
+## 5. Новые транзакции
+Если нужно отправить следующую:
 
-1. Change `txId` → `txId + 1`
-2. Update `userServiceResult` with the value from the previous run's console
-3. Update `clientTxIdCid` with the value from the previous run's console
+1. Меняем `txId` → `txId + 1`
+2. Обновляем `userServiceResult` значением из консоли прошлого запуска
+3. Обновляем `clientTxIdCid` значением из консоли прошлого запуска
 
 ---

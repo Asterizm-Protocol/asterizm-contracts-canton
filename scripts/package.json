@@ -5,10 +5,11 @@
   "license": "ISC",
   "author": "",
   "type": "commonjs",
-  "main": "deploy.ts",
+  "main": "deploy-lock.ts",
   "scripts": {
-    "deploy": "ts-node deploy.ts",
-    "client-send": "ts-node client-send.ts"
+    "deploy-lock": "ts-node deploy-lock.ts",
+    "deploy-nft": "ts-node deploy-nft.ts",
+    "send-lock": "ts-node send-lock.ts"
   },
   "dependencies": {
     "dayjs": "^1.11.19",

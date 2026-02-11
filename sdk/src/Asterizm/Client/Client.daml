@@ -1,17 +1,18 @@
 module Asterizm.Client.Client where
 
+import Splice.AmuletRules
 import DA.Crypto.Text (BytesHex)
 
 import qualified Asterizm.TransferAccount as TransferAccount
 import Asterizm.CustomRelayer (CustomRelayerContract)
 import Asterizm.TrustedAddress (TrustedAddress)
-import qualified Asterizm.AmuletVault as AmuletVault
+import qualified Asterizm.AmuletVaultWithLock as AmuletVaultWithLock
+import qualified Asterizm.NFTVault as NFTVault
 
 template Client
   with
     owner : Party
     manager : Party
-    txId : Int
     notifyTransferSendingResult : Bool
     refundEnabled : Bool
     senders : [Party]
@@ -20,8 +21,8 @@ template Client
     localChainId : Int
     disableHashValidation: Bool
   where
-    signatory owner, manager
-    observer senders, observer customRelayContract
+    signatory owner, manager, customRelayContract.relayOwner
+    observer senders
 
     nonconsuming choice SendMessageWithValue : (ContractId TransferAccount.TransferAccount, ContractId SendMessageEvent)
       with
@@ -30,7 +31,11 @@ template Client
         transferHash : BytesHex
         value : Numeric 10
         transferAccountCid: ContractId TransferAccount.TransferAccount
-      controller sender
+        inputs : [TransferInput]
+        context : PaymentTransferContext
+        dso : Party
+        walletProvider: Party
+      controller sender, walletProvider
       do
         let dstAddress = trustedAddress.address
 
@@ -58,6 +63,23 @@ template Client
         -- Mark transfer as executed
         updatedTransferAccountCid <- exercise transferAccountCid TransferAccount.MarkTransferExecutedBySender with
           sender = sender
+
+        -- Send fee to relayer
+
+        let transfer = Splice.AmuletRules.Transfer with
+                sender = sender
+                provider = walletProvider
+                inputs = inputs
+                outputs =
+                    [  TransferOutput with
+                            receiver = customRelayContract.relayOwner
+                            amount = value
+                            lock = None
+                            receiverFeeRatio = 0.0
+                    ]
+                beneficiaries = None
+
+        result <- exercisePaymentTransfer dso context transfer
 
         -- Return the updated transfer account
         pure (updatedTransferAccountCid, ev)
@@ -154,22 +176,41 @@ template Client
 
         pure cid
 
-    nonconsuming choice CreateAmuletVaultProposal : (ContractId AmuletVault.AmuletVaultProposal)
+    nonconsuming choice CreateAmuletVaultWithLockProposal : (ContractId AmuletVaultWithLock.AmuletVaultWithLockProposal)
       with
-        dsoParty : Party
-        vaultParty : Party
+        dso : Party
+        vault : Party
       controller owner
       do
-        sendCid <- create AmuletVault.AmuletVaultProposal with
+        sendCid <- create AmuletVaultWithLock.AmuletVaultWithLockProposal with
           refundEnabled = refundEnabled
+          clientOwner = owner
           localChainId = localChainId
-          otherAddress = trustedAddress.address
+          clientOtherAddress = trustedAddress.address
           otherChainId = trustedAddress.chain.id
           disableHashValidation = disableHashValidation
           senders = senders
-          dsoParty
-          vaultParty
-          providerParty = owner
+          dso
+          vault
+
+        pure (sendCid)
+
+    nonconsuming choice CreateNftVaultProposal : (ContractId NFTVault.NFTVaultProposal)
+      with
+        dso : Party
+        vault : Party
+      controller owner
+      do
+        sendCid <- create NFTVault.NFTVaultProposal with
+          refundEnabled = refundEnabled
+          clientOwner = owner
+          localChainId = localChainId
+          clientOtherAddress = trustedAddress.address
+          otherChainId = trustedAddress.chain.id
+          disableHashValidation = disableHashValidation
+          senders = senders
+          dso
+          vault
 
         pure (sendCid)
     

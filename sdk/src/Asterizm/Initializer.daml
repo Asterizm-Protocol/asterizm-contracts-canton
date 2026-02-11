@@ -16,7 +16,6 @@ template Factory
       with
         systemRelayerOwner : Party
         localChainId : Int
-        manager : Party
         systemFee : Numeric 10
       controller manager
       do

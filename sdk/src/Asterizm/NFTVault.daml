@@ -1,0 +1,154 @@
+module Asterizm.NFTVault where
+
+import Splice.AmuletRules
+import DA.Crypto.Text (toHex, BytesHex)
+import qualified DA.Crypto.Text as Crypto
+
+import qualified Asterizm.TransferAccount as TransferAccount
+import qualified Asterizm.InitMessage as InitMessage
+
+template NFTVaultProposal
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    clientOtherAddress : BytesHex
+    otherChainId : Int
+    localChainId : Int
+    refundEnabled : Bool
+    disableHashValidation: Bool
+    senders: [Party]
+  where
+    signatory clientOwner
+    observer vault
+
+    nonconsuming choice NFTVaultProposal_Accept : (ContractId NFTVault)
+      controller vault
+      do
+        amuletVaultCid <- create NFTVault with
+          dso 
+          vault 
+          clientOwner 
+          clientOtherAddress 
+          otherChainId 
+          localChainId 
+          refundEnabled 
+          disableHashValidation
+          senders
+
+        pure (amuletVaultCid)
+
+data NFTVault_AcceptResult = NFTVault_AcceptResult with
+    initEvent : InitiateTransferEvent
+    transferAccountCid : ContractId TransferAccount.TransferAccount
+    clientTxIdCid : ContractId SendClientTxId
+  deriving (Eq, Show)
+
+template NFTVault
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    clientOtherAddress : BytesHex
+    otherChainId : Int
+    localChainId : Int
+    refundEnabled : Bool
+    disableHashValidation: Bool
+    senders: [Party]
+  where
+    signatory clientOwner, vault
+
+    nonconsuming choice NFTVault_Accept : NFTVault_AcceptResult
+      with
+        userOtherAddress : BytesHex
+        sendClientTxIdCid : ContractId SendClientTxId
+      controller clientOwner
+      do
+        clientTxIdContract <- fetch sendClientTxIdCid
+
+        let clientTxId = clientTxIdContract.txId
+
+        let payload = serializePayload userOtherAddress clientTxId
+
+        let srcAddress = Crypto.sha256 (toHex clientOwner) -- sha from client owner
+
+        let initMessage = InitMessage.InitMessage {
+          dstAddress = clientOtherAddress,
+          srcAddress = srcAddress,
+          srcChainId = toHex localChainId,
+          dstChainId = toHex otherChainId,
+          txId = toHex clientTxId,
+          payload = payload
+        }
+
+        let transferHash = Crypto.sha256 (InitMessage.serialize initMessage)
+
+        let initEvent = InitiateTransferEvent {
+          userAddress = clientOwner,
+          dstChainId = otherChainId,
+          trustedAddress = clientOtherAddress,
+          transferHash = transferHash,
+          txId = clientTxId,
+          payload = payload
+        }
+
+        transferAccountCid <- create TransferAccount.TransferAccount with
+          owner = clientOwner
+          transferHash = transferHash
+          successReceive = False
+          successExecute = False
+          refunded = False
+          senders = senders
+          payload = Some payload
+
+        clientTxIdCid <- exercise sendClientTxIdCid IncTxId
+
+        pure NFTVault_AcceptResult with
+          initEvent
+          transferAccountCid
+          clientTxIdCid
+
+serializePayload : BytesHex -> Int -> BytesHex
+serializePayload address txId =
+  toHex 0 <> toHex 0 <> toHex 0 <> toHex txId <> address
+
+decimalToIntMultiplied : Decimal -> Int
+decimalToIntMultiplied d =
+  let
+    -- Multiply the decimal by 10^10
+    multipliedDecimal = d  * 10000000000.0
+  in
+    -- Truncate the result to get an Int
+    truncate multipliedDecimal
+
+template SendClientTxId
+  with
+    owner : Party
+    txId : Int
+  where
+    signatory owner
+
+    nonconsuming choice IncTxId : ContractId SendClientTxId
+      controller owner
+      do
+        archive self
+        create this with
+          txId = txId + 1
+
+data InitiateTransferEvent = InitiateTransferEvent
+  with
+    userAddress : Party
+    dstChainId : Int
+    trustedAddress : BytesHex
+    txId : Int
+    transferHash : BytesHex
+    payload: BytesHex
+  deriving (Eq, Show)
+
+mkTransferOutput : Party -> Decimal -> TransferOutput
+mkTransferOutput receiver amount =
+  TransferOutput with
+    receiver
+    amount
+    lock = None
+    receiverFeeRatio = 0.0
