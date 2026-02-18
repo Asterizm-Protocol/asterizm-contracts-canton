@@ -144,6 +144,8 @@ clientreceiveWithLockTest = do
 
     let inputs = map InputAmulet amuletCids
 
+    let ccRate = 1
+
     AmuletVaultUserService_MakePaymentResult {..} <- submit (actAs [fredUser, fredWalletProvider] <> readAs [registry.dso]) $ exerciseCmd amuletVaultUserServiceCid AmuletVaultUserService_MakePayment with
         inputs = inputs
         context = PaymentTransferContext with
@@ -155,7 +157,8 @@ clientreceiveWithLockTest = do
 
     -- Test 2: Accept Payment to Receive
     AmuletVaultWithLockPayment_AcceptResult {..} <- submit bobClientOwner do
-        exerciseCmd amuletVaultPayment AmuletVaultWithLockPayment_Accept
+        exerciseCmd amuletVaultPayment AmuletVaultWithLockPayment_Accept with
+            ccRate = ccRate
 
     -- Verify ReceiveMessage event
     assertMsg "UserAddress mismatch in ReceiveMessage" (initEvent.userAddress == bobClientOwner)
@@ -195,7 +198,7 @@ clientreceiveWithLockTest = do
     let amount = 10.0
     let receiver = toHex fredUser
     let serializedAmount = decimalToIntMultiplied amount
-    let testPayload = serializePayload receiver serializedAmount stakeId
+    let testPayload = serializePayloadReceive receiver serializedAmount stakeId
 
     let dstAddress = Crypto.sha256 (toHex bobClientOwner)
     let initMessage = InitMessage.InitMessage {

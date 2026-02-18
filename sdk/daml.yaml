@@ -1,6 +1,6 @@
 sdk-version: 3.4.9
 name: asterizm
-version: 0.1.11
+version: 0.1.0
 source: src
 dependencies:
 - daml-prim

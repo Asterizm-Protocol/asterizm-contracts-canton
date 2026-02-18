@@ -159,6 +159,8 @@ template AmuletVaultWithLockPayment
     signatory clientOwner, vault, user, walletProvider
 
     nonconsuming choice AmuletVaultWithLockPayment_Accept : AmuletVaultWithLockPayment_AcceptResult
+      with
+        ccRate: Int
       controller clientOwner
       do 
         let amount = targetAmount
@@ -171,7 +173,7 @@ template AmuletVaultWithLockPayment
         require ("stake id " <> show stakeId <> "must be equal to sendClientTxIdCid.txId") (clientTxId == stakeId)
 
         let serializedAmount = decimalToIntMultiplied amount
-        let payload = serializePayload userOtherAddress serializedAmount clientTxId
+        let payload = serializePayloadSend userOtherAddress serializedAmount clientTxId ccRate
 
         let srcAddress = Crypto.sha256 (toHex clientOwner) -- sha from client owner
 
@@ -228,7 +230,7 @@ template AmuletVaultWithLockPayment
             if not disableHashValidation
                 then do
                 let serializedAmount = decimalToIntMultiplied amount
-                let payload = serializePayload receiver serializedAmount stakeId
+                let payload = serializePayloadReceive receiver serializedAmount stakeId
                 let dstAddress = Crypto.sha256 (toHex clientOwner) -- sha from client owner
 
                 let initMessage = InitMessage.InitMessage {
@@ -312,8 +314,12 @@ template AmuletVaultWithLock
         amuletVaultUserService <- create AmuletVaultUserService with ..
         return AmuletVaultWithLock_CreateUserServiceResult with ..
 
-serializePayload : BytesHex -> Int -> Int -> BytesHex
-serializePayload address amount txId =
+serializePayloadSend : BytesHex -> Int -> Int -> Int -> BytesHex
+serializePayloadSend address amount txId ccRate =
+  toHex 0 <> toHex 0 <> toHex 0 <> toHex txId <> toHex 0 <> toHex 0 <> toHex 0 <> toHex amount <> toHex 0 <> toHex 0 <> toHex 0 <> toHex ccRate <> address
+
+serializePayloadReceive : BytesHex -> Int -> Int -> BytesHex
+serializePayloadReceive address amount txId =
   toHex 0 <> toHex 0 <> toHex 0 <> toHex txId <> toHex 0 <> toHex 0 <> toHex 0 <> toHex amount <> address
 
 decimalToIntMultiplied : Decimal -> Int

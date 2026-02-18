@@ -8,7 +8,7 @@ dependencies:
 - daml-script
 start-navigator: false
 data-dependencies:
-  - ../sdk/.daml/dist/asterizm-0.1.11.dar
+  - ../sdk/.daml/dist/asterizm-0.1.0.dar
   - ../dars/splice-token-standard-test-current.dar
   - ../dars/splice-token-test-trading-app-current.dar
   - ../dars/splice-amulet-current.dar

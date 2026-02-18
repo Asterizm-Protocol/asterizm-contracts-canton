@@ -114,7 +114,9 @@ async function clientSend() {
             templateId: amuletVaultWithLockPaymentTemplateId,
             contractId: amuletVaultPayment,
             choice: 'AmuletVaultWithLockPayment_Accept',
-            choiceArgument: {},
+            choiceArgument: {
+                ccRate: 1
+            },
         }
     }) as DamlRecord;
     console.info('acceptPaymentResult', acceptPaymentResult);

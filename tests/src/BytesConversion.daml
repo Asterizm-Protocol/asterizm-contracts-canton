@@ -21,18 +21,18 @@ setup = script do
   srcAddress === expected_srcAddress
 
   let initMsg = InitMessage with
-        srcChainId = toHex 80001
+        srcChainId = toHex 90001
         srcAddress = "32e528337c08efd6332371f58af3be70acda12d2595ede48b0c48d21d5bec073"
         dstChainId = toHex 97
-        dstAddress = "00000000000000000000000074164d84a1960438d307744d3c0a75ae8fb64499"
-        txId = toHex 1
-        payload = "000000000000000000000000f9e3b4ac4ceff24464840c426e7e3506dc145c440000000000000000000000000000000000000000000000000000008bb2c970000000000000000000000000000000000000000000000000000000000000000001"
+        dstAddress = "000000000000000000000000b67b8b9ee3e749e86e072aa5b35354a8dccb67c2"
+        txId = toHex 3
+        payload = "0000000000000000000000000000000000000000000000000000000000000003f9e3b4ac4ceff24464840c426e7e3506dc145c44"
 
   let serialized = serialize initMsg
 
   let transferHash = Crypto.sha256 (serialize initMsg)
 
-  let expected_hash ="9ef81c60d3106421d34ca88d7ee0955f95b98e4d04c9c94ad0e2c40ff0e24a46"
+  let expected_hash ="b31e7e4f308f093e65474c8ba649d8f6effc07b3ea9de1a299823b5bb13d0ad7"
 
   transferHash === expected_hash
  
