@@ -8,6 +8,7 @@ import qualified Asterizm.Initializer as Initializer
 import qualified Asterizm.Chain as Chain
 import qualified Asterizm.InitMessage as InitMessage
 import Asterizm.AmuletVaultWithLock
+import qualified AsterizmLock.Vault as LockVault
 
 import DA.Crypto.Text (toHex)
 import qualified DA.Crypto.Text as Crypto
@@ -111,15 +112,27 @@ clientreceiveWithLockTest = do
     amuletVaultWithLockCid <- submit vaultParty do
         exerciseCmd amuletVaultWithLockProposalCid AmuletVaultWithLockProposal_Accept
 
+    let lockDays = 1500
+
+    lockVaultProposalCid <- submit bobClientOwner do
+        createCmd LockVault.VaultProposal with
+            dso = registry.dso
+            vault = vaultParty
+            clientOwner = bobClientOwner
+            lockDays = lockDays
+
+    lockVaultCid <- submit vaultParty do
+        exerciseCmd lockVaultProposalCid LockVault.VaultProposal_Accept
+
     -- Create User Service for receiving
     userServiceResult <- submit bobClientOwner do
-        exerciseCmd amuletVaultWithLockCid AmuletVaultWithLock_CreateUserService with
+        exerciseCmd lockVaultCid LockVault.Vault_CreateUserService with
             user = fredUser
             userOtherAddress = fredUserOtherAddress
             walletProvider = fredWalletProvider
             description = "Test receive from vault with lock"
 
-    let amuletVaultUserServiceCid = userServiceResult.amuletVaultUserService
+    let vaultUserServiceCid = userServiceResult.vaultUserService
 
     -- Fund the user with amulets
     AmuletRegistry.tapLockedAndUnlockedFunds registry fredUser 1000.0
@@ -145,19 +158,22 @@ clientreceiveWithLockTest = do
     let inputs = map InputAmulet amuletCids
 
     let ccRate = 1
+    let targetAmount = 10.0
 
-    AmuletVaultUserService_MakePaymentResult {..} <- submit (actAs [fredUser, fredWalletProvider] <> readAs [registry.dso]) $ exerciseCmd amuletVaultUserServiceCid AmuletVaultUserService_MakePayment with
+    LockVault.VaultUserService_MakePaymentResult {..} <- submit (actAs [fredUser, fredWalletProvider] <> readAs [registry.dso]) $ exerciseCmd vaultUserServiceCid LockVault.VaultUserService_MakePayment with
         inputs = inputs
         context = PaymentTransferContext with
             amuletRules = amuletRules
             context = transferContext
-        targetAmount = 10.0
-        sendClientTxIdCid = sendClientTxIdCid
-        stakeId = stakeId
+        targetAmount = targetAmount
 
     -- Test 2: Accept Payment to Receive
     AmuletVaultWithLockPayment_AcceptResult {..} <- submit bobClientOwner do
-        exerciseCmd amuletVaultPayment AmuletVaultWithLockPayment_Accept with
+        exerciseCmd amuletVaultWithLockCid AmuletVaultWithLockPayment_Accept with
+            userOtherAddress = fredUserOtherAddress
+            targetAmount = targetAmount
+            sendClientTxIdCid = sendClientTxIdCid
+            stakeId = stakeId
             ccRate = ccRate
 
     -- Verify ReceiveMessage event
@@ -198,7 +214,7 @@ clientreceiveWithLockTest = do
     let amount = 10.0
     let receiver = toHex fredUser
     let serializedAmount = decimalToIntMultiplied amount
-    let testPayload = serializePayloadReceive receiver serializedAmount stakeId
+    let testPayload = serializePayload receiver serializedAmount stakeId 0
 
     let dstAddress = Crypto.sha256 (toHex bobClientOwner)
     let initMessage = InitMessage.InitMessage {
@@ -246,10 +262,16 @@ clientreceiveWithLockTest = do
 
 
     AmuletVaultWithLock_UnlockToUserResult {..} <- submit (actAs [bobClientOwner] <> readAs [registry.dso]) $ do
-        exerciseCmd amuletVaultPayment AmuletVaultWithLock_UnlockToUser with
-            transferContext = appTransferContext
+        exerciseCmd amuletVaultWithLockCid AmuletVaultWithLock_UnlockToUser with
+            user = fredUser
+            targetAmount = targetAmount
+            stakeId = stakeId
             txId = testTxId
             transferAccountCid = transferAccountFromClient
+
+    LockVault.VaultPayment_UnlockToUserResult {..} <- submit (actAs [bobClientOwner] <> readAs [registry.dso]) $ do
+        exerciseCmd amuletVaultPayment LockVault.VaultPayment_UnlockToUser with
+            transferContext = appTransferContext
 
     -- Verify Send event
     assertMsg "DstAddress mismatch in Send" (receiveEvent.dstAddress == show bobClientOwner)

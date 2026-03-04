@@ -1,0 +1,180 @@
+module AsterizmLock.Vault where
+
+import Splice.AmuletRules
+import Splice.Util
+import Splice.Types
+import DA.Crypto.Text (BytesHex)
+import DA.Time
+
+import Splice.Amulet 
+import Splice.Round
+
+import Splice.Expiry
+
+data Vault_CreateUserServiceResult = Vault_CreateUserServiceResult with
+  vaultUserService : ContractId VaultUserService
+
+data VaultPayment_UnlockToUserResult = VaultPayment_UnlockToUserResult
+  with
+    result : LockedAmulet_UnlockResult
+
+data VaultPayment_LiquidateResult = VaultPayment_LiquidateResult
+  with
+      amulet : ContractId Amulet
+  deriving (Show, Eq)
+
+data VaultUserService_MakePaymentResult = VaultUserService_MakePaymentResult with
+  amuletVaultPayment : ContractId VaultPayment
+  senderChange : Optional (ContractId Amulet)
+
+template VaultProposal
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    lockDays : Int
+  where
+    signatory clientOwner
+    observer vault
+
+    nonconsuming choice VaultProposal_Accept : (ContractId Vault)
+      controller vault
+      do
+        amuletVaultCid <- create Vault with ..
+
+        pure (amuletVaultCid)
+
+template Vault
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    lockDays : Int
+  where
+    signatory clientOwner, vault
+
+    nonconsuming choice Vault_CreateUserService : Vault_CreateUserServiceResult
+      with
+        user: Party
+        userOtherAddress : BytesHex
+        walletProvider: Party
+        description: Text
+      controller clientOwner
+      do
+        vaultUserService <- create VaultUserService with ..
+        return Vault_CreateUserServiceResult with ..
+
+template VaultUserService
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    user: Party
+    userOtherAddress : BytesHex
+    walletProvider: Party
+    description: Text
+    lockDays : Int
+  where
+    signatory clientOwner, vault
+    observer user, walletProvider
+
+    nonconsuming choice VaultUserService_MakePayment : VaultUserService_MakePaymentResult
+      with
+        inputs : [TransferInput]
+        context : PaymentTransferContext
+        targetAmount: Decimal
+      controller user, walletProvider
+      do
+        now <- getTime
+
+        contextRound <- fetchPublicReferenceData (ForDso with dso) context.context.openMiningRound (OpenMiningRound_Fetch user)
+
+        outputFees <- exerciseComputeFees dso context user [mkTransferOutput vault targetAmount]
+
+        let lockAmount = targetAmount + sum outputFees
+
+        let expiresAt = now `addRelTime` days lockDays 
+
+        let transfer = Splice.AmuletRules.Transfer with
+                sender = user
+                provider = walletProvider
+                inputs = inputs
+                outputs =
+                    [  TransferOutput with
+                            receiver = user
+                            amount = lockAmount
+                            lock = Some TimeLock with
+                                holders = [clientOwner]
+                                expiresAt = expiresAt
+                                optContext = Some $ "amulet-vault-landing: " <> description
+                            receiverFeeRatio = 0.0
+                    ]
+                beneficiaries = None
+
+        result <- exercisePaymentTransfer dso context transfer
+        let [TransferResultLockedAmulet lockedAmulet] = result.createdAmulets
+
+        let senderChange = result.senderChangeAmulet
+        let round = result.round
+
+        amuletVaultPayment <- create VaultPayment with ..
+
+        return VaultUserService_MakePaymentResult with ..
+
+template VaultPayment
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    user: Party
+    userOtherAddress : BytesHex
+    walletProvider: Party
+    description: Text
+    targetAmount : Decimal -- ^ Exact amount in Amulet that the receiver will get.
+    lockedAmulet : ContractId LockedAmulet
+    round : Round -- ^ The round in which the locked amulet was created, added as an extra field so we can avoid ingesting locked amulets.
+  where
+    signatory clientOwner, vault, user, walletProvider
+          
+    choice VaultPayment_UnlockToUser : VaultPayment_UnlockToUserResult
+      with
+        transferContext : AppTransferContext
+      controller clientOwner
+        do
+            -- unlock users payment 
+            result <- exercise lockedAmulet (LockedAmulet_Unlock transferContext.openMiningRound)
+
+            pure VaultPayment_UnlockToUserResult with
+                result
+
+    choice VaultPayment_Liquidate : VaultPayment_LiquidateResult
+      with
+        transferContext : AppTransferContext
+      controller clientOwner
+        do
+            let amount = targetAmount
+            let receiver = vault
+
+            -- unlock users payment
+            result <- exercise lockedAmulet (LockedAmulet_Unlock transferContext.openMiningRound)
+            -- send to vault
+            let transfer = Splice.AmuletRules.Transfer with
+                  sender = user
+                  provider = walletProvider
+                  inputs = [InputAmulet result.amuletSum.amulet]
+                  outputs = [mkTransferOutput receiver targetAmount]
+                  beneficiaries = None
+            result <- exerciseAppTransfer dso transferContext transfer
+            require "Precomputed fees were exact" (result.summary.senderChangeFee == 0.0)
+            let [TransferResultAmulet amuletCid] = result.createdAmulets
+
+            pure VaultPayment_LiquidateResult with
+                amulet = amuletCid
+
+mkTransferOutput : Party -> Decimal -> TransferOutput
+mkTransferOutput receiver amount =
+  TransferOutput with
+    receiver
+    amount
+    lock = None
+    receiverFeeRatio = 0.0

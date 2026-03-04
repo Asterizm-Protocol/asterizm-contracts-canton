@@ -1,6 +1,6 @@
 sdk-version: 3.4.9
-name: asterizm
-version: 0.1.12
+name: asterizm-lock
+version: 0.1.0
 source: src
 dependencies:
 - daml-prim
@@ -8,11 +8,6 @@ dependencies:
 data-dependencies:
   - ../dars/splice-amulet-current.dar
   - ../dars/splice-util-current.dar
-  - ../dars/splice-api-token-allocation-v1-current.dar
-  - ../dars/splice-api-token-allocation-instruction-v1-current.dar
-  - ../dars/splice-api-token-holding-v1-current.dar
-  - ../dars/splice-api-token-metadata-v1-current.dar
-  - ../dars/splice-api-token-transfer-instruction-v1-current.dar
 start-navigator: false
 build-options:
 - -Wno-crypto-text-is-alpha
