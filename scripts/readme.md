@@ -24,7 +24,7 @@ const factoryCid = {
 Заполняем все переменные из `.env.example`, кроме:
 
 ```
-USER_AMULET_WITH_LOCK_CID
+AMULET_VAULT_WITH_LOCK_CID
 CLIENT_CID
 ```
 
@@ -57,7 +57,7 @@ amuletVaultWithLockCid xxxxx
 ## 3. Заполняем недостающие переменные
 
 ```txt
-USER_AMULET_WITH_LOCK_CID = amuletVaultWithLockCid
+AMULET_VAULT_WITH_LOCK_CID = amuletVaultWithLockCid
 CLIENT_CID = clientCid
 ```
 

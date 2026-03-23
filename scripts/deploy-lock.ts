@@ -20,6 +20,8 @@ import {
     DSO,
     vaultParty,
     amuletVaultWithLockProposalTemplateId,
+    clientTemplateId,
+    lockVaultProposalTemplateId,
 } from './models';
 import { createCmd, exerciseCmd, padHex64, queryContractId, requireValue, sha256HexUtf8, toHex } from './functions';
 
@@ -134,24 +136,21 @@ async function deploy() {
     }) as DamlParty, 'no clientCid');
     console.info('clientCid', clientCid);
 
-    const amuletVaultWithLockProposalCid = requireValue(await createCmd({
-        actAs: clientOwnerParty,
-        templateId: amuletVaultWithLockProposalTemplateId,
-        createArguments: {
-            dso: DSO,
-            vault: vaultParty,
-            clientOwner: clientOwnerParty,
-            clientOtherAddress: padHex64(dstChainTrustedAddress),
-            otherChainId: dstChainId,
-            localChainId: cantonChainId,
-            refundEnabled: true,
-            disableHashValidation: false,
-            senders: [clientSenderParty],
-        },
+    const amuletVaultWithLockProposalCid = requireValue(await exerciseCmd({
+        actAs: [clientOwnerParty],
+        payload: {
+            templateId: clientTemplateId,
+            contractId: clientCid,
+            choice: 'CreateAmuletVaultWithLockProposal',
+            choiceArgument: {
+                dso: DSO,
+                vault: vaultParty,
+            }
+        }
     }) as DamlParty, 'no amuletVaultWithLockProposalCid');
     console.info('amuletVaultWithLockProposalCid', amuletVaultWithLockProposalCid);
 
-    // TO RUNTIME USER_AMULET_WITH_LOCK_CID
+    // TO RUNTIME AMULET_VAULT_WITH_LOCK_CID
     const amuletVaultWithLockCid = requireValue(await exerciseCmd({
         actAs: [vaultParty],
         payload: {
@@ -162,4 +161,29 @@ async function deploy() {
         }
     }), 'no amuletVaultWithLockCid');
     console.info('amuletVaultWithLockCid', amuletVaultWithLockCid);
+
+    const lockDays = 1500;
+    
+    const lockVaultProposalCid = requireValue(await createCmd({
+        actAs: clientOwnerParty,
+        templateId: lockVaultProposalTemplateId,
+        createArguments: {
+            dso: DSO,
+            vault: vaultParty,
+            clientOwner: clientOwnerParty,
+            lockDays,
+        },
+    }) as DamlParty, 'no lockVaultProposalCid');
+    console.info('lockVaultProposalCid', lockVaultProposalCid);
+
+    const lockVaultCid = requireValue(await exerciseCmd({
+        actAs: [vaultParty],
+        payload: {
+            templateId: lockVaultProposalTemplateId,
+            contractId: lockVaultProposalCid,
+            choice: 'VaultProposal_Accept',
+            choiceArgument: {}
+        }
+    }) as DamlParty, 'no lockVaultCid');
+    console.info('lockVaultCid', lockVaultCid);
 }

@@ -1,13 +1,13 @@
 sdk-version: 3.4.9
-name: asterizm
-version: 0.1.12
+name: asterizm-v6
+version: 0.1.13
 source: src
 dependencies:
 - daml-prim
 - daml-stdlib
 data-dependencies:
-  - ../dars/splice-amulet-current.dar
-  - ../dars/splice-util-current.dar
+  - ../dars/splice-amulet-0.1.16.dar
+  - ../dars/splice-util-0.1.5.dar
   - ../dars/splice-api-token-allocation-v1-current.dar
   - ../dars/splice-api-token-allocation-instruction-v1-current.dar
   - ../dars/splice-api-token-holding-v1-current.dar

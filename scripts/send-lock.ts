@@ -8,7 +8,6 @@ import {
     exerciseCmd,
     createCmd,
     findInputHoldings,
-    padHex64,
 } from './functions';
 import {
     DamlParty,
@@ -20,8 +19,6 @@ import {
     getOpenAndIssuingMiningRounds,
 } from './ledger-api';
 import {
-    amuletVaultUserServiceTemplateId,
-    amuletVaultWithLockPaymentTemplateId,
     amuletVaultWithLockTemplateId,
     cantonChainId,
     clientOwnerParty,
@@ -35,36 +32,38 @@ import {
     transferProvider,
     userParty,
     DSO,
+    lockVaultTemplateId,
+    lockVaultUserServiceTemplateId,
+    lockVaultPaymentTemplateId,
 } from './models';
 
 clientSend();
 
 async function clientSend() {
-    const txId = 5;
+    const txId = 4;
     const amuletAmount = '60'; // minimum working amount!
     const relayFee = '1';
 
     // SEND TO CLIENT
-    const amuletVaultWithLockCid = process.env.USER_AMULET_WITH_LOCK_CID!;
+    const lockVaultCid = process.env.LOCK_VAULT_CID!;
     const userServiceResult = await exerciseCmd({
         actAs: [clientOwnerParty],
         payload: {
-            templateId: amuletVaultWithLockTemplateId,
-            contractId: amuletVaultWithLockCid,
-            choice: 'AmuletVaultWithLock_CreateUserService',
+            templateId: lockVaultTemplateId,
+            contractId: lockVaultCid,
+            choice: 'Vault_CreateUserService',
             choiceArgument: {
                 user: userParty,
-                walletProvider: transferProvider,
                 userOtherAddress: dstChainUserAddress,
-                description: 'Test receive from vault with lock'
+                walletProvider: transferProvider,
+                description: 'Test receive from vault with lock',
             },
         }
     }) as DamlRecord;
-    console.log('userServiceResult', userServiceResult);
 
-    const amuletVaultUserServiceCid = requireValue(
-        userServiceResult['amuletVaultUserService'],
-        'undefined amuletVaultUserService'
+    const vaultUserServiceCid = requireValue(
+        userServiceResult['vaultUserService'],
+        'undefined vaultUserService'
     ) as DamlParty;
 
     const sendClientTxIdCid = await createCmd({
@@ -75,6 +74,7 @@ async function clientSend() {
             txId: String(txId),
         }
     });
+    // const sendClientTxIdCid = '00873ffe1f69e6d7cea59990996feaad2ab436a243174d9033a5d280eb31ec56efca1212209e380eb7d2881057d98854285f0c20cbbc74df32b02b5010c1c7671849ed04e4';
     console.info('sendClientTxIdCid', sendClientTxIdCid);
 
     const inputHoldingCids = await findInputHoldings(userParty, amuletAmount);
@@ -84,9 +84,9 @@ async function clientSend() {
     const makePaymentResult = await exerciseCmd({
         actAs: [userParty, transferProvider],
         payload: {
-            templateId: amuletVaultUserServiceTemplateId,
-            contractId: amuletVaultUserServiceCid,
-            choice: 'AmuletVaultUserService_MakePayment',
+            templateId: lockVaultUserServiceTemplateId,
+            contractId: vaultUserServiceCid,
+            choice: 'VaultUserService_MakePayment',
             choiceArgument: {
                 inputs: inputHoldingCids.map((cid) => ({
                     tag: 'InputAmulet',
@@ -94,33 +94,33 @@ async function clientSend() {
                 })),
                 context: makePaymentCtx,
                 targetAmount: amuletAmount,
-                stakeId: String(txId),
-                sendClientTxIdCid,
             },
         },
         disclosedContracts: makePaymentDisclosed,
     }) as DamlRecord;
-    console.info('makePaymentResult', makePaymentResult);
-
     const amuletVaultPayment = requireValue(
         makePaymentResult['amuletVaultPayment'],
         'no amuletVaultPayment'
     ) as DamlParty;
-    console.info('amuletVaultPayment', amuletVaultPayment);
 
+    const amuletVaultWithLockCid = process.env.AMULET_VAULT_WITH_LOCK_CID!;
     const acceptPaymentResult = await exerciseCmd({
         actAs: [clientOwnerParty],
         payload: {
-            templateId: amuletVaultWithLockPaymentTemplateId,
-            contractId: amuletVaultPayment,
+            templateId: amuletVaultWithLockTemplateId,
+            contractId: amuletVaultWithLockCid,
             choice: 'AmuletVaultWithLockPayment_Accept',
             choiceArgument: {
-                ccRate: 1
+                userOtherAddress: dstChainUserAddress,
+                targetAmount: amuletAmount,
+                sendClientTxIdCid,
+                stakeId: String(txId),
+                ccRate: 10000000000,
             },
         }
     }) as DamlRecord;
-    console.info('acceptPaymentResult', acceptPaymentResult);
 
+    console.info('acceptPaymentResult', acceptPaymentResult);
     const initEvent = requireValue(acceptPaymentResult['initEvent'] as DamlRecord, 'no initEvent');
     const clientTxIdCid = requireValue(acceptPaymentResult['clientTxIdCid'] as DamlText, 'no next clientTxIdCid');
     const transferAccountCid = requireValue(acceptPaymentResult['transferAccountCid'] as DamlParty, 'no transferAccountCid');
@@ -193,6 +193,25 @@ async function clientSend() {
     // FINISH RELAY -> CLIENT
 
     // START RECEIVE CLIENT
+    const unlockFromVaultRes = await exerciseCmd({
+        actAs: [clientOwnerParty],
+        payload: {
+            templateId: amuletVaultWithLockTemplateId,
+            contractId: amuletVaultWithLockCid,
+            choice: 'AmuletVaultWithLock_UnlockToUser',
+            choiceArgument: {
+                user: userParty,
+                targetAmount: amuletAmount,
+                stakeId: String(txId),
+                txId: String(txId),
+                transferAccountCid: transferAccountFromClient,
+            },
+        },
+    }) as DamlRecord;
+    const vaultPaymentCid = (unlockFromVaultRes['amuletVaultPayment'] as string) ?? amuletVaultPayment;
+    // FINISH RECEIVE CLIENT
+
+    // START UNLOCK
     const amuletRules2 = await getAmuletRules();
     const openAndIssuingMiningRound2 = await getOpenAndIssuingMiningRounds();
     const now2 = new Date();
@@ -222,26 +241,24 @@ async function clientSend() {
         },
     ];
 
-    const unlockVaultResult = await exerciseCmd({
+    const unlockPaymentRes = await exerciseCmd({
         actAs: [clientOwnerParty],
         payload: {
-            templateId: amuletVaultWithLockPaymentTemplateId,
-            contractId: amuletVaultPayment,
-            choice: 'AmuletVaultWithLock_UnlockToUser',
+            templateId: lockVaultPaymentTemplateId,
+            contractId: vaultPaymentCid,
+            choice: 'VaultPayment_UnlockToUser',
             choiceArgument: {
                 transferContext: {
                     amuletRules: amuletRules2.amulet_rules.contract.contract_id,
                     openMiningRound: openMiningRounds2[openMiningRounds2.length - 1].contract.contract_id,
-                    featuredAppRight: clientOwnerFeaturedApp?.featured_app_right?.contract_id ?? null
-                },
-                txId: txId,
-                transferAccountCid: transferAccountFromClient,
-            },
+                    featuredAppRight: clientOwnerFeaturedApp?.featured_app_right?.contract_id ?? null,
+                }
+            }
         },
         disclosedContracts: disclosedContracts2,
     });
-    console.log('unlockVaultResult', unlockVaultResult);
-    // FINISH RECEIVE CLIENT
+    console.log('unlockPaymentRes', unlockPaymentRes);
+    // FINISH UNLOCK
 }
 
 async function buildContextAndDisclosed(walletProviderParty: string): Promise<{

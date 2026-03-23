@@ -24,14 +24,20 @@ export const cantonChainId = process.env.CANTON_CHAIN_ID!;
 export const dstChainId = process.env.DST_CHAIN_ID!;
 export const dstChainName = process.env.DST_CHAIN_NAME!
 export const dstChainTrustedAddress = process.env.DST_CHAIN_TRUSTED_ADDRESS!.replace(/^0x/i, '').toLowerCase();
-export const dstChainUserAddress = process.env.DST_CHAIN_USER_ADDRESS!.replace(/^0x/i, '').toLowerCase();
+export const dstChainUserAddress = process.env.DST_CHAIN_USER_ADDRESS?.replace(/^0x/i, '').toLowerCase();
 
 export const asterizmPackageId = process.env.ASTERIZM_PACKAGE_ID!;
+export const asterizmLockPackageId = process.env.ASTERIZM_LOCK_PACKAGE_ID!;
+
 export const initializerFactoryTemplateId = `${asterizmPackageId}:Asterizm.Initializer:Factory`;
 export const chainTemplateId = `${asterizmPackageId}:Asterizm.Chain:Chain`;
 export const clientProposalTemplateId = `${asterizmPackageId}:Asterizm.Client.Proposal:ClientProposal`;
 export const clientProposalApprovedByRelayerTemplateId = `${asterizmPackageId}:Asterizm.Client.Proposal:ClientProposalApprovedByRelayer`;
 export const clientTemplateId = `${asterizmPackageId}:Asterizm.Client.Client:Client`;
+export const lockVaultProposalTemplateId = `${asterizmLockPackageId}:AsterizmLock.Vault:VaultProposal`;
+export const lockVaultTemplateId = `${asterizmLockPackageId}:AsterizmLock.Vault:Vault`;
+export const lockVaultUserServiceTemplateId = `${asterizmLockPackageId}:AsterizmLock.Vault:VaultUserService`;
+export const lockVaultPaymentTemplateId = `${asterizmLockPackageId}:AsterizmLock.Vault:VaultPayment`;
 
 export const amuletVaultWithLockProposalTemplateId = `${asterizmPackageId}:Asterizm.AmuletVaultWithLock:AmuletVaultWithLockProposal`;
 export const amuletVaultWithLockTemplateId = `${asterizmPackageId}:Asterizm.AmuletVaultWithLock:AmuletVaultWithLock`;
