@@ -124,7 +124,7 @@ template AmuletVaultWithLock
           transferAccountCid
           clientTxIdCid
           
-    choice AmuletVaultWithLock_UnlockToUser : AmuletVaultWithLock_UnlockToUserResult
+    nonconsuming choice AmuletVaultWithLock_UnlockToUser : AmuletVaultWithLock_UnlockToUserResult
       with
         user: Party
         targetAmount : Decimal -- ^ Exact amount in Amulet that the receiver will get.

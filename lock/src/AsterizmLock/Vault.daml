@@ -23,7 +23,10 @@ data VaultPayment_LiquidateResult = VaultPayment_LiquidateResult
       amulet : ContractId Amulet
   deriving (Show, Eq)
 
-data VaultUserService_MakePaymentResult = VaultUserService_MakePaymentResult with
+data VaultUserService_MakePaymentProposalResult = VaultUserService_MakePaymentProposalResult with
+  vaultPaymentProposal : ContractId VaultPaymentProposal
+
+data VaultPaymentProposal_AcceptResult = VaultPaymentProposal_AcceptResult with
   amuletVaultPayment : ContractId VaultPayment
   senderChange : Optional (ContractId Amulet)
 
@@ -78,12 +81,35 @@ template VaultUserService
     signatory clientOwner, vault
     observer user, walletProvider
 
-    nonconsuming choice VaultUserService_MakePayment : VaultUserService_MakePaymentResult
+    nonconsuming choice VaultUserService_MakePaymentProposal : VaultUserService_MakePaymentProposalResult
       with
         inputs : [TransferInput]
         context : PaymentTransferContext
         targetAmount: Decimal
-      controller user, walletProvider
+      controller user
+      do
+        vaultPaymentProposal <- create VaultPaymentProposal with ..
+        return VaultUserService_MakePaymentProposalResult with ..
+
+template VaultPaymentProposal
+  with
+    dso : Party
+    vault : Party
+    clientOwner : Party
+    user: Party
+    userOtherAddress : BytesHex
+    walletProvider: Party
+    description: Text
+    lockDays : Int
+    inputs : [TransferInput]
+    context : PaymentTransferContext
+    targetAmount: Decimal
+  where
+    signatory user, clientOwner, vault
+    observer walletProvider
+
+    choice VaultPaymentProposal_Accept : VaultPaymentProposal_AcceptResult
+      controller walletProvider
       do
         now <- getTime
 
@@ -119,7 +145,7 @@ template VaultUserService
 
         amuletVaultPayment <- create VaultPayment with ..
 
-        return VaultUserService_MakePaymentResult with ..
+        return VaultPaymentProposal_AcceptResult with ..
 
 template VaultPayment
   with
