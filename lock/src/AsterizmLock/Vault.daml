@@ -83,8 +83,6 @@ template VaultUserService
 
     nonconsuming choice VaultUserService_MakePaymentProposal : VaultUserService_MakePaymentProposalResult
       with
-        inputs : [TransferInput]
-        context : PaymentTransferContext
         targetAmount: Decimal
       controller user
       do
@@ -101,14 +99,15 @@ template VaultPaymentProposal
     walletProvider: Party
     description: Text
     lockDays : Int
-    inputs : [TransferInput]
-    context : PaymentTransferContext
     targetAmount: Decimal
   where
     signatory user, clientOwner, vault
     observer walletProvider
 
     choice VaultPaymentProposal_Accept : VaultPaymentProposal_AcceptResult
+      with
+        inputs : [TransferInput]
+        context : PaymentTransferContext
       controller walletProvider
       do
         now <- getTime

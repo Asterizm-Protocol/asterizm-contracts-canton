@@ -151,23 +151,23 @@ clientreceiveWithLockTest = do
 
     setTime (max now openRound.opensAt)
 
+    let ccRate = 1
+    let targetAmount = 10.0
+
+    LockVault.VaultUserService_MakePaymentProposalResult {..} <- submit (actAs [fredUser] <> readAs [registry.dso]) $ exerciseCmd vaultUserServiceCid LockVault.VaultUserService_MakePaymentProposal with
+        targetAmount = targetAmount
+
     let transferContext = amuletTransferContext openRoundCid None
 
     amuletCids <- map fst <$> query @Amulet fredUser
 
     let inputs = map InputAmulet amuletCids
 
-    let ccRate = 1
-    let targetAmount = 10.0
-
-    LockVault.VaultUserService_MakePaymentProposalResult {..} <- submit (actAs [fredUser] <> readAs [registry.dso]) $ exerciseCmd vaultUserServiceCid LockVault.VaultUserService_MakePaymentProposal with
+    LockVault.VaultPaymentProposal_AcceptResult {..} <- submit (actAs [fredWalletProvider] <> readAs [registry.dso]) $ exerciseCmd vaultPaymentProposal LockVault.VaultPaymentProposal_Accept with
         inputs = inputs
         context = PaymentTransferContext with
             amuletRules = amuletRules
             context = transferContext
-        targetAmount = targetAmount
-
-    LockVault.VaultPaymentProposal_AcceptResult {..} <- submit (actAs [fredWalletProvider] <> readAs [registry.dso]) $ exerciseCmd vaultPaymentProposal LockVault.VaultPaymentProposal_Accept
 
     -- Test 2: Accept Payment to Receive
     AmuletVaultWithLockPayment_AcceptResult {..} <- submit bobClientOwner do
